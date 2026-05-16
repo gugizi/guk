@@ -1,0 +1,36 @@
+# Google Drive folder ID to back up.
+# The ID is the final path segment in a Drive folder URL:
+# https://drive.google.com/drive/folders/<folder_id>
+folder_id: "replace-with-drive-folder-id"
+
+# Local directory that will receive the mirrored backup and manifest.
+destination: "~/backups/google-drive-folder"
+
+# Leave false for normal backups. Set true only if you also want trashed files.
+include_trashed: false
+
+auth:
+  # Option A: service account. Share the source Drive folder with the service
+  # account email, then point this at the downloaded JSON key.
+  service_account_file: "~/.config/gdrive-folder-backup/service-account.json"
+
+  # Option B: OAuth user credentials. Comment service_account_file above, create
+  # an OAuth Desktop client in Google Cloud, then run the CLI once interactively.
+  # oauth_client_secrets_file: "~/.config/gdrive-folder-backup/oauth-client.json"
+  # oauth_token_file: "~/.config/gdrive-folder-backup/token.json"
+
+# Google Workspace files are not directly downloadable, so they are exported.
+# Override these only if you need different export formats.
+export_mime_types:
+  application/vnd.google-apps.document:
+    mime_type: application/vnd.openxmlformats-officedocument.wordprocessingml.document
+    extension: .docx
+  application/vnd.google-apps.spreadsheet:
+    mime_type: application/vnd.openxmlformats-officedocument.spreadsheetml.sheet
+    extension: .xlsx
+  application/vnd.google-apps.presentation:
+    mime_type: application/vnd.openxmlformats-officedocument.presentationml.presentation
+    extension: .pptx
+  application/vnd.google-apps.drawing:
+    mime_type: image/png
+    extension: .png

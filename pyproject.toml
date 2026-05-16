@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "guk-drive-backup"
+version = "0.1.0"
+description = "Backup a specific Google Drive folder to local storage."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "google-api-python-client>=2.170.0",
+    "google-auth>=2.40.0",
+    "google-auth-oauthlib>=1.2.0",
+    "PyYAML>=6.0.0",
+]
+
+[project.scripts]
+gdrive-folder-backup = "drive_backup.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
