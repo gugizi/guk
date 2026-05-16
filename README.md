@@ -89,5 +89,5 @@ systemd user timer를 선호한다면 `ExecStart`에 같은 명령을 넣고 tim
 ## 테스트
 
 ```bash
-PYTHONPATH=src python -m unittest
+PYTHONPATH=src python3 -m unittest discover -s tests
 ```
