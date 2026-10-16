@@ -15,7 +15,7 @@ CATALOG = {
         ("UPDATE orders SET status='PAID' WHERE order_id=:1", "UPDATE", "APP_PAY", "JDBC Thin Client"),
         ("SELECT /*+ FULL(t) */ * FROM audit_log t WHERE event_dt > SYSDATE-1/24", "SELECT", "BATCH", "sqlplus"),
         ("INSERT INTO payment_hist SELECT * FROM payment_stage WHERE batch_id=:1", "INSERT", "APP_PAY", "JDBC Thin Client"),
-        ("SELECT sid, event, seconds_in_wait FROM v$session WHERE status='ACTIVE'", "SELECT", "MONITOR", "spacemon-agent"),
+        ("SELECT sid, event, seconds_in_wait FROM v$session WHERE status='ACTIVE'", "SELECT", "MONITOR", "okedbmon-agent"),
     ],
     "TIBERO": [
         ("SELECT emp_no, dept_cd, salary FROM erp.employee WHERE dept_cd=:1", "SELECT", "ERP_HR", "tbJDBC"),
@@ -33,7 +33,7 @@ CATALOG = {
         ("SELECT day, SUM(revenue) FROM fact_sales WHERE day >= CURRENT_DATE - 30 GROUP BY day", "SELECT", "bi", "psql"),
         ("SELECT customer_id, COUNT(*) FROM events WHERE ts > now() - interval '15 minutes' GROUP BY 1 ORDER BY 2 DESC LIMIT 20", "SELECT", "analytics", "psycopg"),
         ("UPDATE warehouse.job SET status='RUNNING', started_at=now() WHERE id=$1", "UPDATE", "etl", "psycopg"),
-        ("SELECT pid, state, query FROM pg_stat_activity WHERE state='active'", "SELECT", "monitor", "spacemon-agent"),
+        ("SELECT pid, state, query FROM pg_stat_activity WHERE state='active'", "SELECT", "monitor", "okedbmon-agent"),
     ],
 }
 

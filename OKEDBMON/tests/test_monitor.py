@@ -18,7 +18,7 @@ def build(tmp_path: Path):
 
 
 def login(client: TestClient) -> str:
-    response = client.post("/api/login", json={"username": "admin", "password": "spacemon"})
+    response = client.post("/api/login", json={"username": "admin", "password": "okedbmon"})
     assert response.status_code == 200
     return response.json()["token"]
 
@@ -96,7 +96,7 @@ def test_login_and_ingest_flow(tmp_path):
     denied = client.post("/api/ingest", json=sample_payload())
     assert denied.status_code == 401
 
-    accepted = client.post("/api/ingest", json=sample_payload(), headers={"X-Agent-Token": "spacemon-agent"})
+    accepted = client.post("/api/ingest", json=sample_payload(), headers={"X-Agent-Token": "okedbmon-agent"})
     assert accepted.status_code == 200
 
     dashboard = client.get("/api/dashboard", headers=auth(token)).json()
@@ -125,8 +125,8 @@ def test_retention_deletes_only_expired_rows(tmp_path):
     token = login(client)
     old = datetime.now() - timedelta(days=10)
     fresh = datetime.now()
-    client.post("/api/ingest", json=sample_payload(moment=old, sql="SELECT old_row FROM dual", sql_key="old"), headers={"X-Agent-Token": "spacemon-agent"})
-    client.post("/api/ingest", json=sample_payload(moment=fresh, sql="SELECT fresh_row FROM dual", sql_key="new"), headers={"X-Agent-Token": "spacemon-agent"})
+    client.post("/api/ingest", json=sample_payload(moment=old, sql="SELECT old_row FROM dual", sql_key="old"), headers={"X-Agent-Token": "okedbmon-agent"})
+    client.post("/api/ingest", json=sample_payload(moment=fresh, sql="SELECT fresh_row FROM dual", sql_key="new"), headers={"X-Agent-Token": "okedbmon-agent"})
     client.put(
         "/api/retention",
         headers=auth(token),
@@ -157,19 +157,35 @@ def test_retention_deletes_only_expired_rows(tmp_path):
     store.close()
 
 
+def test_product_identity_and_legacy_names(tmp_path):
+    store, client = build(tmp_path)
+    health = client.get("/api/health").json()
+    assert (health["title"], health["version"], health["display"]) == ("OKEDBMON", "1.0.0.0", "OKEDBMON V1.0.0.0")
+    assert client.get("/api/dashboard", headers=auth(login(client))).json()["display"] == "OKEDBMON V1.0.0.0"
+    store.close()
+
+    legacy_props = {**load_properties(), "support.title": "OKEMON", "agent.token": "spacemon-agent", "db.repository.path": "data/okemon.sqlite"}
+    Store(tmp_path / "old.sqlite", legacy_props, seed=True).close()
+    migrated = Store(tmp_path / "old.sqlite", load_properties(), seed=True)
+    assert migrated.setting("support.title") == "OKEDBMON"
+    assert migrated.setting("db.repository.path") == "data/okedbmon.sqlite"
+    assert migrated.agent_authorized("okedbmon-agent")
+    migrated.close()
+
+
 def test_settings_and_instance_registry(tmp_path):
     store, client = build(tmp_path)
     token = login(client)
     saved = client.put(
         "/api/settings",
         headers=auth(token),
-        json={"values": {"threshold.cpu": "70", "agent.token": "next-token", "support.title": "OKEMON", "support.ver": "1.0.0.1"}},
+        json={"values": {"threshold.cpu": "70", "agent.token": "next-token", "support.title": "OKEDBMON", "support.ver": "1.0.0.1"}},
     )
     assert saved.status_code == 200
     masked = next(item for item in saved.json()["settings"] if item["setting_key"] == "agent.token")
     assert masked["setting_value"] == "********"
     assert store.setting("threshold.cpu") == "70"
-    assert store.setting("support.title") == "OKEMON"
+    assert store.setting("support.title") == "OKEDBMON"
     assert store.setting("support.ver") == "1.0.0.1"
     rejected = client.put(
         "/api/settings",
@@ -178,7 +194,7 @@ def test_settings_and_instance_registry(tmp_path):
     )
     assert rejected.status_code == 400
     assert store.agent_authorized("next-token")
-    assert not store.agent_authorized("spacemon-agent")
+    assert not store.agent_authorized("okedbmon-agent")
 
     created = client.post(
         "/api/instances",

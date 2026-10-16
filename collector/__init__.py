@@ -1,1 +1,0 @@
-"""OKEMON collection server package."""

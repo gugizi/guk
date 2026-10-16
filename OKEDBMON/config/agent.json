@@ -1,6 +1,6 @@
 {
   "collector_url": "http://127.0.0.1:8080",
-  "token": "spacemon-agent",
+  "token": "okedbmon-agent",
   "interval_sec": 5,
   "targets": [
     {
@@ -28,9 +28,9 @@
       "product": "MARIADB",
       "host": "127.0.0.1",
       "port": 3306,
-      "database": "spacemon",
-      "user": "spacemon",
-      "password": "spacemon",
+      "database": "okedbmon",
+      "user": "okedbmon",
+      "password": "okedbmon",
       "mode": "simulate"
     },
     {
@@ -38,9 +38,9 @@
       "product": "POSTGRESQL",
       "host": "127.0.0.1",
       "port": 5432,
-      "database": "spacemon",
-      "user": "spacemon",
-      "password": "spacemon",
+      "database": "okedbmon",
+      "user": "okedbmon",
+      "password": "okedbmon",
       "mode": "simulate"
     }
   ]

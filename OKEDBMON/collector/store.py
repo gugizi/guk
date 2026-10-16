@@ -11,10 +11,14 @@ import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from collector.version import PRODUCT, VERSION, require_version
+from collector.version import LEGACY_TITLES, PRODUCT, VERSION, display_name, require_version
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PROPERTIES = ROOT / "config" / "default.properties"
+DEFAULT_REPOSITORY = "data/okedbmon.sqlite"
+LEGACY_REPOSITORIES = ("data/okemon.sqlite", "data/spacemon.sqlite")
+DEFAULT_AGENT_TOKEN = "okedbmon-agent"
+LEGACY_AGENT_TOKENS = {"spacemon-agent"}
 
 RETENTION_KINDS = {
     "performance": {
@@ -266,15 +270,19 @@ def verify_password(password: str, stored: str) -> bool:
 def repository_path(properties: dict[str, str] | None = None) -> Path:
     """SQLite file for both environment settings and collected performance data."""
     props = properties if properties is not None else load_properties()
-    configured = ROOT / props.get("db.repository.path", "data/okemon.sqlite")
-    legacy = ROOT / "data" / "spacemon.sqlite"
-    if not configured.exists() and legacy.exists():
-        configured.parent.mkdir(parents=True, exist_ok=True)
-        legacy.rename(configured)
-        for suffix in ("-wal", "-shm"):
-            extra = Path(str(legacy) + suffix)
-            if extra.exists():
-                extra.rename(Path(str(configured) + suffix))
+    configured = ROOT / props.get("db.repository.path", DEFAULT_REPOSITORY)
+    if configured.exists():
+        return configured
+    for legacy_name in LEGACY_REPOSITORIES:
+        legacy = ROOT / legacy_name
+        if legacy.exists():
+            configured.parent.mkdir(parents=True, exist_ok=True)
+            legacy.rename(configured)
+            for suffix in ("-wal", "-shm"):
+                extra = Path(str(legacy) + suffix)
+                if extra.exists():
+                    extra.rename(Path(str(configured) + suffix))
+            break
     return configured
 
 
@@ -354,15 +362,15 @@ class Store:
             if user is None:
                 self.conn.execute(
                     "INSERT INTO app_user (user_id, password_hash, display_name, role) VALUES (?, ?, ?, ?)",
-                    ("admin", hash_password("spacemon"), "관리자", "ADMIN"),
+                    ("admin", hash_password("okedbmon"), "관리자", "ADMIN"),
                 )
             if self.conn.execute("SELECT COUNT(*) AS c FROM mon_instance").fetchone()["c"] == 0:
                 interval = int(self.properties.get("collect.interval.sec", "5"))
                 instances = [
                     ("ORA_PROD", "ORACLE", "db-ora-01", 1521, "ORCL", "monitor", "운영", "주문/정산 Oracle"),
                     ("TIB_ERP", "TIBERO", "db-tib-01", 8629, "TIBERO", "monitor", "기간계", "ERP Tibero"),
-                    ("MARIA_WEB", "MARIADB", "127.0.0.1", 3306, "spacemon", "spacemon", "서비스", "웹 MariaDB"),
-                    ("PG_ANALYTICS", "POSTGRESQL", "127.0.0.1", 5432, "spacemon", "spacemon", "분석", "분석 PostgreSQL"),
+                    ("MARIA_WEB", "MARIADB", "127.0.0.1", 3306, "okedbmon", "okedbmon", "서비스", "웹 MariaDB"),
+                    ("PG_ANALYTICS", "POSTGRESQL", "127.0.0.1", 5432, "okedbmon", "okedbmon", "분석", "분석 PostgreSQL"),
                 ]
                 for alias, product, host, port, db_name, user_name, group, desc in instances:
                     self.conn.execute(
@@ -379,7 +387,7 @@ class Store:
 
     def _migrate_identity(self, stamp: str) -> None:
         title = self.setting("support.title", "")
-        if title in {"SpaceMon", "Spacemon", "SPACEMON"}:
+        if title in LEGACY_TITLES:
             self.conn.execute(
                 "UPDATE env_setting SET setting_value=?, description=?, updated_at=? WHERE setting_key='support.title'",
                 (PRODUCT, SETTING_HELP["support.title"], stamp),
@@ -393,10 +401,15 @@ class Store:
                 (VERSION, SETTING_HELP["support.ver"], stamp),
             )
         stored_path = self.setting("db.repository.path", "")
-        if stored_path == "data/spacemon.sqlite":
+        if stored_path in LEGACY_REPOSITORIES:
             self.conn.execute(
                 "UPDATE env_setting SET setting_value=?, updated_at=? WHERE setting_key='db.repository.path'",
-                (self.properties.get("db.repository.path", "data/okemon.sqlite"), stamp),
+                (self.properties.get("db.repository.path", DEFAULT_REPOSITORY), stamp),
+            )
+        if self.setting("agent.token", "") in LEGACY_AGENT_TOKENS:
+            self.conn.execute(
+                "UPDATE env_setting SET setting_value=?, updated_at=? WHERE setting_key='agent.token'",
+                (self.properties.get("agent.token", DEFAULT_AGENT_TOKEN), stamp),
             )
 
     def setting(self, key: str, default: str = "") -> str:
@@ -475,7 +488,7 @@ class Store:
         return {"user_id": row["user_id"], "display_name": row["display_name"], "role": row["role"]}
 
     def agent_authorized(self, token: str) -> bool:
-        expected = self.setting("agent.token", "spacemon-agent")
+        expected = self.setting("agent.token", DEFAULT_AGENT_TOKEN)
         return hmac.compare_digest(token or "", expected)
 
     def list_instances(self) -> list[dict]:
@@ -944,9 +957,12 @@ class Store:
                     "alerts": alerts,
                 }
             )
+        title = self.setting("support.title", PRODUCT)
+        version = self.setting("support.ver", VERSION)
         return {
-            "title": self.setting("support.title", PRODUCT),
-            "version": self.setting("support.ver", VERSION),
+            "title": title,
+            "version": version,
+            "display": display_name(title, version),
             "products": self.setting("support.products", ""),
             "generated_at": now_text(),
             "instances": cards,

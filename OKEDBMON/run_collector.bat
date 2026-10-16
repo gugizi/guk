@@ -4,7 +4,7 @@ if not exist .venv\Scripts\python.exe (
   python -m venv .venv || goto :error
   .venv\Scripts\python.exe -m pip install -r requirements.txt || goto :error
 )
-echo OKEMON collector: http://127.0.0.1:8080/  (admin / spacemon)
+echo OKEDBMON collector: http://127.0.0.1:8080/  (admin / okedbmon)
 .venv\Scripts\python.exe -m collector
 goto :eof
 :error

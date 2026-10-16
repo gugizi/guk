@@ -1,8 +1,9 @@
 const state = {
-  token: localStorage.getItem("okemon_token") || localStorage.getItem("spacemon_token") || "",
+  token: localStorage.getItem("okedbmon_token") || "",
   user: null,
   page: "dashboard",
-  alias: localStorage.getItem("okemon_alias") || localStorage.getItem("spacemon_alias") || "",
+  alias: localStorage.getItem("okedbmon_alias") || "",
+  identity: { title: "OKEDBMON", version: "" },
   dashboard: null,
   error: "",
   detailSql: null,
@@ -53,17 +54,39 @@ async function api(path, options = {}) {
   return data;
 }
 
+function rememberIdentity(source) {
+  if (source?.title) state.identity.title = source.title;
+  if (source?.version) state.identity.version = source.version;
+}
+
+function versionLabel() {
+  return state.identity.version ? `V${state.identity.version}` : "";
+}
+
+function productLabel() {
+  return `${state.identity.title} ${versionLabel()}`.trim();
+}
+
+async function loadIdentity() {
+  try {
+    rememberIdentity(await fetch("/api/health").then((response) => response.json()));
+  } catch (err) {
+    // The login screen still works without a version label.
+  }
+  document.title = productLabel();
+}
+
 function logout() {
   state.token = "";
   state.user = null;
-  localStorage.removeItem("okemon_token");
+  localStorage.removeItem("okedbmon_token");
   clearInterval(state.timer);
   renderLogin();
 }
 
 function setAlias(alias) {
   state.alias = alias;
-  localStorage.setItem("okemon_alias", alias);
+  localStorage.setItem("okedbmon_alias", alias);
 }
 
 async function boot() {
@@ -87,15 +110,15 @@ function renderLogin(message = "") {
   app.innerHTML = `
     <div class="login">
       <form class="login-card" id="login-form">
-        <div class="brand"><div class="mark">O</div><h1>OKEMON</h1></div>
+        <div class="brand"><div class="mark">O</div><h1>${esc(state.identity.title)}<span class="ver">${esc(versionLabel())}</span></h1></div>
         <p class="sub">DB 수집서버 · Oracle, Tibero, MariaDB, PostgreSQL</p>
         <label>사용자 ID</label>
         <input name="username" autocomplete="username" value="admin" />
         <label>비밀번호</label>
-        <input name="password" type="password" autocomplete="current-password" value="spacemon" />
+        <input name="password" type="password" autocomplete="current-password" value="okedbmon" />
         <button class="primary" type="submit">로그인</button>
         ${message ? `<div class="error">${esc(message)}</div>` : ""}
-        <p class="hint">초기 계정 admin / spacemon · 에이전트가 5초 주기로 세션과 SQL을 전송합니다.</p>
+        <p class="hint">초기 계정 admin / okedbmon · 에이전트가 5초 주기로 세션과 SQL을 전송합니다.</p>
       </form>
     </div>`;
   document.getElementById("login-form").addEventListener("submit", async (event) => {
@@ -107,7 +130,7 @@ function renderLogin(message = "") {
         body: JSON.stringify({ username: form.get("username"), password: form.get("password") }),
       });
       state.token = data.token;
-      localStorage.setItem("okemon_token", data.token);
+      localStorage.setItem("okedbmon_token", data.token);
       boot();
     } catch (err) {
       renderLogin(err.message);
@@ -154,13 +177,14 @@ function targetList() {
 }
 
 function shell(title, subtitle, body) {
-  document.title = `${state.dashboard?.title || "OKEMON"} ${state.dashboard?.version || ""}`.trim();
+  rememberIdentity(state.dashboard);
+  document.title = productLabel();
   const previousScroll = document.querySelector(".target-scroll")?.scrollTop || 0;
   const filterFocused = document.activeElement?.id === "target-filter";
   app.innerHTML = `
     <div class="frame">
       <header class="topbar">
-        <div class="brand"><div class="mark">O</div><div><strong>${esc(state.dashboard?.title || "OKEMON")}</strong><span class="small muted ver">${esc(state.dashboard?.version || "")}</span></div></div>
+        <div class="brand"><div class="mark">O</div><div class="product-name"><strong>${esc(state.identity.title)}</strong><span class="ver">${esc(versionLabel())}</span></div></div>
         <nav class="menu">
           ${NAV.map(([id, label]) => `<button data-page="${id}" class="${state.page === id ? "active" : ""}">${label}</button>`).join("")}
         </nav>
@@ -633,4 +657,4 @@ function bindAlias() {
   };
 }
 
-boot();
+loadIdentity().then(boot);

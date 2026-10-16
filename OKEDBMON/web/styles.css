@@ -100,9 +100,11 @@ textarea { min-height: 72px; resize: vertical; }
   background: rgba(10, 14, 20, 0.96);
   border-bottom: 1px solid var(--line);
 }
-.topbar .brand { margin: 0; min-width: 160px; }
+.topbar .brand { margin: 0; min-width: 200px; }
 .topbar .brand .mark { width: 32px; height: 32px; border-radius: 9px; }
-.topbar .ver { margin-left: 6px; }
+.brand .ver { margin-left: 8px; color: var(--accent); font-weight: 600; font-size: 13px; letter-spacing: 0.02em; white-space: nowrap; }
+.brand h1 .ver { font-size: 15px; }
+.product-name { white-space: nowrap; }
 .menu { display: flex; gap: 2px; flex: 1; overflow-x: auto; height: 100%; }
 .menu button {
   background: transparent;

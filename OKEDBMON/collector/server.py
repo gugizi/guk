@@ -13,7 +13,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from collector.store import ROOT, Store, load_properties, now_text, repository_path
-from collector.version import PRODUCT, VERSION
+from collector.version import PRODUCT, VERSION, display_name
 
 WEB = ROOT / "web"
 
@@ -83,7 +83,9 @@ def create_app(store: Store | None = None) -> FastAPI:
 
     @app.get("/api/health")
     def health():
-        return {"status": "ok", "time": now_text(), "title": store.setting("support.title", PRODUCT), "version": store.setting("support.ver", VERSION)}
+        title = store.setting("support.title", PRODUCT)
+        version = store.setting("support.ver", VERSION)
+        return {"status": "ok", "time": now_text(), "title": title, "version": version, "display": display_name(title, version)}
 
     @app.post("/api/login")
     def login(body: LoginBody):
