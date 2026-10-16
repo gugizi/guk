@@ -1,8 +1,8 @@
 const state = {
-  token: localStorage.getItem("spacemon_token") || "",
+  token: localStorage.getItem("okemon_token") || localStorage.getItem("spacemon_token") || "",
   user: null,
   page: "dashboard",
-  alias: localStorage.getItem("spacemon_alias") || "",
+  alias: localStorage.getItem("okemon_alias") || localStorage.getItem("spacemon_alias") || "",
   dashboard: null,
   error: "",
   detailSql: null,
@@ -56,14 +56,14 @@ async function api(path, options = {}) {
 function logout() {
   state.token = "";
   state.user = null;
-  localStorage.removeItem("spacemon_token");
+  localStorage.removeItem("okemon_token");
   clearInterval(state.timer);
   renderLogin();
 }
 
 function setAlias(alias) {
   state.alias = alias;
-  localStorage.setItem("spacemon_alias", alias);
+  localStorage.setItem("okemon_alias", alias);
 }
 
 async function boot() {
@@ -87,7 +87,7 @@ function renderLogin(message = "") {
   app.innerHTML = `
     <div class="login">
       <form class="login-card" id="login-form">
-        <div class="brand"><div class="mark">S</div><h1>SpaceMon</h1></div>
+        <div class="brand"><div class="mark">O</div><h1>OKEMON</h1></div>
         <p class="sub">DB 수집서버 · Oracle, Tibero, MariaDB, PostgreSQL</p>
         <label>사용자 ID</label>
         <input name="username" autocomplete="username" value="admin" />
@@ -107,7 +107,7 @@ function renderLogin(message = "") {
         body: JSON.stringify({ username: form.get("username"), password: form.get("password") }),
       });
       state.token = data.token;
-      localStorage.setItem("spacemon_token", data.token);
+      localStorage.setItem("okemon_token", data.token);
       boot();
     } catch (err) {
       renderLogin(err.message);
@@ -116,10 +116,11 @@ function renderLogin(message = "") {
 }
 
 function shell(title, subtitle, body) {
+  document.title = `${state.dashboard?.title || "OKEMON"} ${state.dashboard?.version || ""}`.trim();
   app.innerHTML = `
     <div class="shell">
       <aside class="side">
-        <div class="brand"><div class="mark">S</div><div><strong>${esc(state.dashboard?.title || "SpaceMon")}</strong><div class="small muted">${esc(state.dashboard?.version || "")}</div></div></div>
+        <div class="brand"><div class="mark">O</div><div><strong>${esc(state.dashboard?.title || "OKEMON")}</strong><div class="small muted">${esc(state.dashboard?.version || "")}</div></div></div>
         <nav>
           ${NAV.map(([id, label]) => `<button data-page="${id}" class="${state.page === id ? "active" : ""}">${label}</button>`).join("")}
         </nav>

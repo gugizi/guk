@@ -1,1 +1,1 @@
-"""SpaceMon collection server package."""
+"""OKEMON collection server package."""

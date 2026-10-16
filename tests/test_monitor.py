@@ -163,12 +163,20 @@ def test_settings_and_instance_registry(tmp_path):
     saved = client.put(
         "/api/settings",
         headers=auth(token),
-        json={"values": {"threshold.cpu": "70", "agent.token": "next-token", "support.title": "SpaceMon"}},
+        json={"values": {"threshold.cpu": "70", "agent.token": "next-token", "support.title": "OKEMON", "support.ver": "1.0.0.1"}},
     )
     assert saved.status_code == 200
     masked = next(item for item in saved.json()["settings"] if item["setting_key"] == "agent.token")
     assert masked["setting_value"] == "********"
     assert store.setting("threshold.cpu") == "70"
+    assert store.setting("support.title") == "OKEMON"
+    assert store.setting("support.ver") == "1.0.0.1"
+    rejected = client.put(
+        "/api/settings",
+        headers=auth(token),
+        json={"values": {"support.ver": "1.0.1"}},
+    )
+    assert rejected.status_code == 400
     assert store.agent_authorized("next-token")
     assert not store.agent_authorized("spacemon-agent")
 

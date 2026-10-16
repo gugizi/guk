@@ -12,6 +12,7 @@ from typing import Any
 from agent.osmetrics import read_host_metrics
 from agent.simulate import Simulator, sql_id
 from collector.store import now_text
+from collector.version import VERSION
 
 
 def make_collector(target: dict):
@@ -64,7 +65,7 @@ class LiveBase:
             "agent_alias": self.alias,
             "product": self.product,
             "collect_tm": now_text(),
-            "version": "5.0.1",
+            "version": VERSION,
             "status": "ONLINE",
             "message": "live",
             "performance": performance,
@@ -682,7 +683,7 @@ def empty_error(target: dict, message: str) -> dict[str, Any]:
         "agent_alias": target["agent_alias"],
         "product": target.get("product") or "",
         "collect_tm": now_text(),
-        "version": "5.0.1",
+        "version": VERSION,
         "status": "ERROR",
         "message": message[:500],
         "performance": None,

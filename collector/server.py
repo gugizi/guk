@@ -12,7 +12,8 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from collector.store import ROOT, Store, load_properties, now_text
+from collector.store import ROOT, Store, load_properties, now_text, repository_path
+from collector.version import PRODUCT, VERSION
 
 WEB = ROOT / "web"
 
@@ -53,7 +54,7 @@ class IngestBody(BaseModel):
     agent_alias: str
     product: str = ""
     collect_tm: str
-    version: str = "5.0.1"
+    version: str = VERSION
     status: str = "ONLINE"
     message: str = ""
     performance: dict | None = None
@@ -66,9 +67,8 @@ class IngestBody(BaseModel):
 def create_app(store: Store | None = None) -> FastAPI:
     props = load_properties()
     if store is None:
-        db_path = ROOT / props.get("db.repository.path", "data/spacemon.sqlite")
-        store = Store(db_path, props)
-    app = FastAPI(title="SpaceMon Collector", version=store.setting("support.ver", "5.0.1"))
+        store = Store(repository_path(props), props)
+    app = FastAPI(title=f"{PRODUCT} Collector", version=store.setting("support.ver", VERSION))
     app.state.store = store
     _start_retention_loop(store)
 
@@ -83,7 +83,7 @@ def create_app(store: Store | None = None) -> FastAPI:
 
     @app.get("/api/health")
     def health():
-        return {"status": "ok", "time": now_text(), "title": store.setting("support.title", "SpaceMon")}
+        return {"status": "ok", "time": now_text(), "title": store.setting("support.title", PRODUCT), "version": store.setting("support.ver", VERSION)}
 
     @app.post("/api/login")
     def login(body: LoginBody):
@@ -133,7 +133,10 @@ def create_app(store: Store | None = None) -> FastAPI:
 
     @app.put("/api/settings")
     def put_settings(body: SettingsBody, user: dict = Depends(current_user)):
-        store.update_settings(body.values)
+        try:
+            store.update_settings(body.values)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"settings": store.settings_public()}
 
     @app.get("/api/retention")

@@ -11,6 +11,8 @@ import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from collector.version import PRODUCT, VERSION, require_version
+
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_PROPERTIES = ROOT / "config" / "default.properties"
 
@@ -261,6 +263,21 @@ def verify_password(password: str, stored: str) -> bool:
     return hmac.compare_digest(candidate, stored)
 
 
+def repository_path(properties: dict[str, str] | None = None) -> Path:
+    """SQLite file for both environment settings and collected performance data."""
+    props = properties if properties is not None else load_properties()
+    configured = ROOT / props.get("db.repository.path", "data/okemon.sqlite")
+    legacy = ROOT / "data" / "spacemon.sqlite"
+    if not configured.exists() and legacy.exists():
+        configured.parent.mkdir(parents=True, exist_ok=True)
+        legacy.rename(configured)
+        for suffix in ("-wal", "-shm"):
+            extra = Path(str(legacy) + suffix)
+            if extra.exists():
+                extra.rename(Path(str(configured) + suffix))
+    return configured
+
+
 def load_properties(path: Path | None = None) -> dict[str, str]:
     source = path or DEFAULT_PROPERTIES
     values: dict[str, str] = {}
@@ -278,7 +295,7 @@ def load_properties(path: Path | None = None) -> dict[str, str]:
 SETTING_HELP = {
     "support.lang": "화면 언어 (ko, en)",
     "support.title": "제품 표시 이름",
-    "support.ver": "수집서버 버전",
+    "support.ver": "수집서버 버전 (#.#.#.#)",
     "support.products": "모니터링 대상 DBMS",
     "collector.host": "수집서버 바인드 주소",
     "collector.port": "웹 조회 포트",
@@ -357,7 +374,30 @@ class Store:
                         """,
                         (alias, product, host, port, db_name, user_name, group, interval, desc, stamp),
                     )
+            self._migrate_identity(stamp)
             self.conn.commit()
+
+    def _migrate_identity(self, stamp: str) -> None:
+        title = self.setting("support.title", "")
+        if title in {"SpaceMon", "Spacemon", "SPACEMON"}:
+            self.conn.execute(
+                "UPDATE env_setting SET setting_value=?, description=?, updated_at=? WHERE setting_key='support.title'",
+                (PRODUCT, SETTING_HELP["support.title"], stamp),
+            )
+        version = self.setting("support.ver", "")
+        try:
+            require_version(version)
+        except ValueError:
+            self.conn.execute(
+                "UPDATE env_setting SET setting_value=?, description=?, updated_at=? WHERE setting_key='support.ver'",
+                (VERSION, SETTING_HELP["support.ver"], stamp),
+            )
+        stored_path = self.setting("db.repository.path", "")
+        if stored_path == "data/spacemon.sqlite":
+            self.conn.execute(
+                "UPDATE env_setting SET setting_value=?, updated_at=? WHERE setting_key='db.repository.path'",
+                (self.properties.get("db.repository.path", "data/okemon.sqlite"), stamp),
+            )
 
     def setting(self, key: str, default: str = "") -> str:
         row = self.conn.execute(
@@ -395,9 +435,12 @@ class Store:
                     continue
                 if key == "agent.token" and (not value or value == "********"):
                     continue
+                stored = str(value)
+                if key == "support.ver":
+                    stored = require_version(stored)
                 self.conn.execute(
                     "UPDATE env_setting SET setting_value=?, updated_at=? WHERE setting_key=?",
-                    (str(value), stamp, key),
+                    (stored, stamp, key),
                 )
             self.conn.commit()
 
@@ -527,7 +570,7 @@ class Store:
                     message=excluded.message,
                     version=excluded.version
                 """,
-                (alias, product, collect_tm, status, message, payload.get("version") or "5.0.1"),
+                (alias, product, collect_tm, status, message, payload.get("version") or VERSION),
             )
             if perf:
                 self.conn.execute(
@@ -902,8 +945,8 @@ class Store:
                 }
             )
         return {
-            "title": self.setting("support.title", "SpaceMon"),
-            "version": self.setting("support.ver", "5.0.1"),
+            "title": self.setting("support.title", PRODUCT),
+            "version": self.setting("support.ver", VERSION),
             "products": self.setting("support.products", ""),
             "generated_at": now_text(),
             "instances": cards,

@@ -7,6 +7,7 @@ import math
 from datetime import datetime
 
 from collector.store import now_text
+from collector.version import VERSION
 
 CATALOG = {
     "ORACLE": [
@@ -110,7 +111,7 @@ class Simulator:
             "agent_alias": self.alias,
             "product": self.product,
             "collect_tm": now_text(moment),
-            "version": "5.0.1",
+            "version": VERSION,
             "status": "ONLINE",
             "message": "simulate",
             "performance": {
