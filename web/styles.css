@@ -87,25 +87,82 @@ textarea { min-height: 72px; resize: vertical; }
   margin-top: 12px;
 }
 
-.shell { display: grid; grid-template-columns: 228px 1fr; min-height: 100vh; }
-.side {
-  background: rgba(12, 17, 24, 0.92);
-  border-right: 1px solid var(--line);
-  padding: 18px 12px;
+.frame { min-height: 100vh; display: flex; flex-direction: column; }
+.topbar {
   position: sticky;
   top: 0;
-  height: 100vh;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  height: 56px;
+  padding: 0 16px;
+  background: rgba(10, 14, 20, 0.96);
+  border-bottom: 1px solid var(--line);
 }
-.side nav { display: flex; flex-direction: column; gap: 4px; margin-top: 18px; }
-.side button {
-  text-align: left;
+.topbar .brand { margin: 0; min-width: 160px; }
+.topbar .brand .mark { width: 32px; height: 32px; border-radius: 9px; }
+.topbar .ver { margin-left: 6px; }
+.menu { display: flex; gap: 2px; flex: 1; overflow-x: auto; height: 100%; }
+.menu button {
   background: transparent;
   border: 0;
+  border-bottom: 3px solid transparent;
   color: var(--muted);
-  border-radius: 10px;
-  padding: 10px 12px;
+  padding: 0 14px;
+  white-space: nowrap;
 }
-.side button.active, .side button:hover { background: var(--panel-2); color: var(--text); }
+.menu button:hover { color: var(--text); }
+.menu button.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 700; }
+.workspace { display: grid; grid-template-columns: 260px 1fr; flex: 1; min-height: 0; }
+.targets {
+  position: sticky;
+  top: 56px;
+  height: calc(100vh - 56px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 10px;
+  background: rgba(12, 17, 24, 0.92);
+  border-right: 1px solid var(--line);
+}
+.targets-head { display: flex; justify-content: space-between; align-items: baseline; padding: 0 4px; }
+.target-filter { padding: 8px 10px; font-size: 13px; }
+.target-scroll { overflow-y: auto; flex: 1; display: grid; align-content: start; gap: 12px; }
+.target-group-title {
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  padding: 0 6px 4px;
+}
+.target-group-title span { margin-left: 4px; }
+.target {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 12px 1fr;
+  column-gap: 8px;
+  row-gap: 2px;
+  align-items: center;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  padding: 8px;
+  color: var(--text);
+}
+.target:hover { background: var(--panel); }
+.target.selected { background: var(--panel-2); border-color: var(--accent); }
+.target-main { display: flex; justify-content: space-between; align-items: center; gap: 6px; min-width: 0; }
+.target-main strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.target-kpi { grid-column: 2; font-size: 11px; color: var(--muted); }
+.target-kpi b { color: var(--danger); font-weight: 600; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); display: inline-block; }
+.dot.on { background: var(--accent); box-shadow: 0 0 0 3px rgba(61, 204, 151, 0.15); }
+.dot.warn { background: var(--warn); box-shadow: 0 0 0 3px rgba(240, 180, 41, 0.15); }
+.dot.off { background: var(--danger); }
+.current-target { display: inline-flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.card.selected { border-color: var(--accent); }
+[hidden] { display: none !important; }
 .main { padding: 18px 22px 40px; }
 .top {
   display: flex;
@@ -185,8 +242,9 @@ tr.click:hover { background: rgba(255,255,255,0.03); cursor: pointer; }
 .toolbar label { margin: 0; }
 .toolbar input, .toolbar select { width: auto; min-width: 160px; }
 @media (max-width: 980px) {
-  .shell { grid-template-columns: 1fr; }
-  .side { position: relative; height: auto; }
-  .side nav { flex-direction: row; flex-wrap: wrap; }
+  .topbar { height: auto; flex-wrap: wrap; padding: 8px 12px; }
+  .menu { order: 3; flex-basis: 100%; height: 40px; }
+  .workspace { grid-template-columns: 1fr; }
+  .targets { position: relative; top: 0; height: auto; max-height: 260px; }
   .split, .kpis { grid-template-columns: 1fr 1fr; }
 }

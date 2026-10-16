@@ -8,19 +8,20 @@ Oracle, Tibero, MariaDB, PostgreSQL을 같은 화면에서 보는 모니터링 �
 
 ## 실행
 
-```bash
-python -m venv .venv
-.venv/bin/pip install -r requirements.txt
-.venv/bin/python -m collector
-```
+Python 3.10 이상이 필요합니다. 저장소를 받은 PC나 서버에서 수집서버를 먼저 띄우고, 다른 창에서 에이전트를 띄웁니다.
 
-다른 터미널에서 에이전트를 실행합니다.
+| OS | 수집서버 | 에이전트 |
+| --- | --- | --- |
+| Windows | `run_collector.bat` | `run_agent.bat` |
+| Linux / Unix | `./run_collector.sh` | `./run_agent.sh` |
 
-```bash
-.venv/bin/python -m agent
-```
+처음 실행할 때 `.venv`를 만들고 패키지를 설치합니다. 수집서버를 띄운 PC의 브라우저에서 `http://127.0.0.1:8080/` 을 엽니다. 다른 PC에서는 `http://<수집서버 IP>:8080/` 으로 접속하며, 방화벽에서 8080 포트를 열어야 합니다. 초기 계정은 `admin` / `spacemon` 입니다.
 
-브라우저에서 `http://127.0.0.1:8080/` 을 엽니다. 초기 계정은 `admin` / `spacemon` 입니다.
+## 화면 구성
+
+- 상단: 조회 메뉴 (통합 관제, 실시간, 세션 이력, SQL Text, 성능 추이, 점검 요약, 환경 설정, 보관 주기)
+- 왼쪽: 모니터링 대상 목록. 그룹별로 묶고 상태, CPU, Active Session, Lock을 보여줍니다. 검색으로 거를 수 있습니다.
+- 가운데: 선택한 대상과 메뉴에 해당하는 조회 결과
 
 ## 설정
 

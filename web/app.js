@@ -115,32 +115,122 @@ function renderLogin(message = "") {
   });
 }
 
+const TARGET_PAGES = ["realtime", "history", "sql", "trend", "report"];
+
+function targetList() {
+  const filter = (state.targetFilter || "").trim().toLowerCase();
+  const instances = state.dashboard?.instances || [];
+  const matches = (item) => !filter || [item.agent_alias, item.product, item.host_nm, item.group_nm]
+    .some((value) => String(value || "").toLowerCase().includes(filter));
+  const groups = {};
+  instances.forEach((item) => {
+    const key = item.group_nm || "미지정";
+    (groups[key] = groups[key] || []).push(item);
+  });
+  const online = (state.dashboard?.instances || []).filter((item) => item.online).length;
+  const total = (state.dashboard?.instances || []).length;
+  const body = Object.entries(groups).map(([group, items]) => `
+    <div class="target-group" ${items.some(matches) ? "" : "hidden"}>
+      <div class="target-group-title">${esc(group)} <span>${items.length}</span></div>
+      ${items.map((item) => `
+        <button class="target ${item.agent_alias === state.alias ? "selected" : ""}" data-target="${esc(item.agent_alias)}" title="${esc(item.host_nm)}:${esc(item.port)} / ${esc(item.db_name)}" ${matches(item) ? "" : "hidden"}>
+          <span class="dot ${item.online ? (item.alerts?.length ? "warn" : "on") : "off"}"></span>
+          <span class="target-main">
+            <strong>${esc(item.agent_alias)}</strong>
+            <span class="product ${esc(item.product)}">${esc(item.product)}</span>
+          </span>
+          <span class="target-kpi">CPU ${num(item.cpu_usage, 0)}% · Act ${num(item.active_sessions)}${item.lock_wait ? ` · <b>Lock ${num(item.lock_wait)}</b>` : ""}</span>
+        </button>`).join("")}
+    </div>`).join("");
+  return `
+    <aside class="targets">
+      <div class="targets-head">
+        <strong>모니터링 대상</strong>
+        <span class="small muted">${online} / ${total} ONLINE</span>
+      </div>
+      <input id="target-filter" class="target-filter" placeholder="이름, DBMS, 호스트 검색" value="${esc(state.targetFilter || "")}" />
+      <div class="target-scroll">${body || `<div class="muted small">대상이 없습니다.</div>`}</div>
+    </aside>`;
+}
+
 function shell(title, subtitle, body) {
   document.title = `${state.dashboard?.title || "OKEMON"} ${state.dashboard?.version || ""}`.trim();
+  const previousScroll = document.querySelector(".target-scroll")?.scrollTop || 0;
+  const filterFocused = document.activeElement?.id === "target-filter";
   app.innerHTML = `
-    <div class="shell">
-      <aside class="side">
-        <div class="brand"><div class="mark">O</div><div><strong>${esc(state.dashboard?.title || "OKEMON")}</strong><div class="small muted">${esc(state.dashboard?.version || "")}</div></div></div>
-        <nav>
+    <div class="frame">
+      <header class="topbar">
+        <div class="brand"><div class="mark">O</div><div><strong>${esc(state.dashboard?.title || "OKEMON")}</strong><span class="small muted ver">${esc(state.dashboard?.version || "")}</span></div></div>
+        <nav class="menu">
           ${NAV.map(([id, label]) => `<button data-page="${id}" class="${state.page === id ? "active" : ""}">${label}</button>`).join("")}
         </nav>
-      </aside>
-      <section class="main">
-        <div class="top">
-          <div><h2>${esc(title)}</h2><p>${subtitle}</p></div>
-          <div class="row">
-            <span class="small muted">${esc(state.user?.display_name || "")}</span>
-            <button class="ghost" id="logout">로그아웃</button>
-          </div>
+        <div class="row">
+          <span class="small muted">${esc(state.user?.display_name || "")}</span>
+          <button class="ghost" id="logout">로그아웃</button>
         </div>
-        ${state.error ? `<div class="error">${esc(state.error)}</div>` : ""}
-        ${body}
-      </section>
+      </header>
+      <div class="workspace">
+        ${targetList()}
+        <section class="main">
+          <div class="top">
+            <div><h2>${esc(title)}</h2><p>${subtitle}</p></div>
+          </div>
+          ${state.error ? `<div class="error">${esc(state.error)}</div>` : ""}
+          ${body}
+        </section>
+      </div>
     </div>`;
   document.getElementById("logout").onclick = logout;
   document.querySelectorAll("[data-page]").forEach((button) => {
     button.onclick = () => showPage(button.dataset.page);
   });
+  const scroller = document.querySelector(".target-scroll");
+  if (scroller) scroller.scrollTop = previousScroll;
+  const filter = document.getElementById("target-filter");
+  if (filter) {
+    if (filterFocused) {
+      filter.focus();
+      filter.setSelectionRange(filter.value.length, filter.value.length);
+    }
+    filter.oninput = () => {
+      state.targetFilter = filter.value;
+      applyTargetFilter();
+    };
+  }
+  document.querySelectorAll("[data-target]").forEach((button) => {
+    button.onclick = () => {
+      setAlias(button.dataset.target);
+      state.selectedSql = "";
+      showPage(TARGET_PAGES.includes(state.page) ? state.page : "realtime");
+    };
+  });
+}
+
+function applyTargetFilter() {
+  const filter = (state.targetFilter || "").trim().toLowerCase();
+  const byAlias = Object.fromEntries((state.dashboard?.instances || []).map((item) => [item.agent_alias, item]));
+  document.querySelectorAll(".target-group").forEach((group) => {
+    let shown = 0;
+    group.querySelectorAll("[data-target]").forEach((button) => {
+      const item = byAlias[button.dataset.target] || {};
+      const match = !filter || [item.agent_alias, item.product, item.host_nm, item.group_nm]
+        .some((value) => String(value || "").toLowerCase().includes(filter));
+      button.hidden = !match;
+      if (match) shown += 1;
+    });
+    group.hidden = shown === 0;
+  });
+}
+
+function currentTarget() {
+  const item = (state.dashboard?.instances || []).find((row) => row.agent_alias === state.alias);
+  if (!item) return `<span class="current-target muted">왼쪽 목록에서 대상을 선택하세요.</span>`;
+  return `<span class="current-target">
+    <span class="dot ${item.online ? "on" : "off"}"></span>
+    <strong>${esc(item.agent_alias)}</strong>
+    <span class="product ${esc(item.product)}">${esc(item.product)}</span>
+    <span class="small muted">${esc(item.host_nm)}:${esc(item.port)} / ${esc(item.db_name)}</span>
+  </span>`;
 }
 
 let renderSerial = 0;
@@ -171,7 +261,7 @@ async function showPage(page, silent = false) {
   } catch (err) {
     if (!stillCurrent(serial)) return;
     state.error = err.message;
-    if (!document.querySelector(".shell")) shell("오류", err.message, "");
+    if (!document.querySelector(".frame")) shell("오류", err.message, "");
   }
 }
 
@@ -196,7 +286,7 @@ async function pageDashboard(serial = state.renderSerial) {
   await ensureDashboard();
   if (!stillCurrent(serial)) return;
   const cards = state.dashboard.instances.map((item) => `
-    <article class="card" data-alias="${esc(item.agent_alias)}">
+    <article class="card ${item.agent_alias === state.alias ? "selected" : ""}" data-alias="${esc(item.agent_alias)}">
       <header>
         <strong>${esc(item.agent_alias)}</strong>
         <span class="product ${esc(item.product)}">${esc(item.product)}</span>
@@ -247,7 +337,7 @@ async function pageRealtime(serial = state.renderSerial) {
     </tr>`).join("");
   shell("실시간", `${alias} 현재 세션과 Lock`, `
     <div class="toolbar">
-      <label>인스턴스<br><select id="alias">${aliasOptions(alias)}</select></label>
+      ${currentTarget()}
       <span class="small muted">수집 ${esc(sessions.collect_tm || "-")} · Active ${active.length} / 전체 ${sessions.sessions.length}</span>
     </div>
     <div class="split">
@@ -297,7 +387,7 @@ async function pageHistory(serial = state.renderSerial) {
       <td>${esc(row.source)}</td><td class="sql">${esc((row.sql_text || "").slice(0, 160))}</td>
     </tr>`).join("");
   shell("세션 이력", "에이전트가 주기적으로 샘플링한 Active Session과 완료 SQL 이력입니다.", `
-    <div class="toolbar"><label>인스턴스<br><select id="alias">${aliasOptions(alias)}</select></label></div>
+    <div class="toolbar">${currentTarget()}</div>
     <div class="panel" style="overflow:auto"><table><thead><tr><th>수집시각</th><th>SID</th><th>사용자</th><th>상태</th><th>Wait</th><th>ms</th><th>출처</th><th>SQL</th></tr></thead><tbody>${rows || `<tr><td colspan="8" class="muted">이력이 없습니다.</td></tr>`}</tbody></table></div>
     <div class="panel" id="sql-preview" style="margin-top:12px"><div class="sql muted">행을 선택하면 SQL 전문이 보입니다.</div></div>`);
   bindAlias();
@@ -323,7 +413,7 @@ async function pageSql(serial = state.renderSerial) {
     </tr>`).join("");
   shell("SQL Text", "수행된 SQL 문과 수집 구간 합산 통계입니다.", `
     <div class="toolbar">
-      <label>인스턴스<br><select id="alias">${aliasOptions(alias)}</select></label>
+      ${currentTarget()}
       <label>검색<br><input id="sql-q" value="${esc(q)}" placeholder="SQL 일부 또는 SQL ID" /></label>
       <button class="primary" id="sql-search">조회</button>
     </div>
@@ -349,7 +439,7 @@ async function pageTrend(serial = state.renderSerial) {
   const data = await api(`/api/performance?alias=${encodeURIComponent(alias)}`);
   if (!stillCurrent(serial)) return;
   shell("성능 추이", "수집서버에 저장된 DB 성능 샘플입니다.", `
-    <div class="toolbar"><label>인스턴스<br><select id="alias">${aliasOptions(alias)}</select></label><span class="small muted">${data.series.length} samples</span></div>
+    <div class="toolbar">${currentTarget()}<span class="small muted">${data.series.length} samples</span></div>
     <div class="grid" style="grid-template-columns:1fr 1fr">
       ${metricPanel("CPU %", data.series, "cpu_usage", "#f0b429")}
       ${metricPanel("Active Session", data.series, "active_sessions", "#3dcc97")}
@@ -394,7 +484,7 @@ async function pageReport(serial = state.renderSerial) {
   const summary = data.summary || {};
   const sql = (data.top_sql || []).map((row) => `<tr><td>${esc(row.sql_id)}</td><td>${num(row.elapsed_ms, 1)}</td><td>${num(row.executions)}</td><td class="sql">${esc((row.sql_text || "").slice(0, 180))}</td></tr>`).join("");
   shell("점검 요약", "일간 점검에 쓰는 CPU, 세션, Top SQL 요약입니다.", `
-    <div class="toolbar"><label>인스턴스<br><select id="alias">${aliasOptions(alias)}</select></label><span class="small muted">${esc(data.start)} ~ ${esc(data.end)} · ${num(data.samples)} samples</span></div>
+    <div class="toolbar">${currentTarget()}<span class="small muted">${esc(data.start)} ~ ${esc(data.end)} · ${num(data.samples)} samples</span></div>
     <div class="kpis">
       <div class="kpi"><span>CPU 평균</span><strong>${num(summary.cpu_avg, 1)}</strong></div>
       <div class="kpi"><span>CPU 최대</span><strong>${num(summary.cpu_max, 1)}</strong></div>
@@ -485,6 +575,7 @@ async function pageSettings(serial = state.renderSerial) {
 }
 
 async function pageRetention(serial = state.renderSerial) {
+  await ensureDashboard();
   const data = await api("/api/retention");
   if (!stillCurrent(serial)) return;
   const rows = data.policies.map((item) => `
