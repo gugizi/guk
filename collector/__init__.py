@@ -1,0 +1,1 @@
+"""SpaceMon collection server package."""
