@@ -1,0 +1,47 @@
+{
+  "collector_url": "http://127.0.0.1:8080",
+  "token": "okedbmon-agent",
+  "interval_sec": 5,
+  "targets": [
+    {
+      "agent_alias": "ORA_PROD",
+      "product": "ORACLE",
+      "host": "db-ora-01",
+      "port": 1521,
+      "database": "ORCL",
+      "user": "monitor",
+      "password": "",
+      "mode": "simulate"
+    },
+    {
+      "agent_alias": "TIB_ERP",
+      "product": "TIBERO",
+      "host": "db-tib-01",
+      "port": 8629,
+      "database": "TIBERO",
+      "user": "monitor",
+      "password": "",
+      "mode": "simulate"
+    },
+    {
+      "agent_alias": "MARIA_WEB",
+      "product": "MARIADB",
+      "host": "127.0.0.1",
+      "port": 3306,
+      "database": "okedbmon",
+      "user": "okedbmon",
+      "password": "okedbmon",
+      "mode": "simulate"
+    },
+    {
+      "agent_alias": "PG_ANALYTICS",
+      "product": "POSTGRESQL",
+      "host": "127.0.0.1",
+      "port": 5432,
+      "database": "okedbmon",
+      "user": "okedbmon",
+      "password": "okedbmon",
+      "mode": "simulate"
+    }
+  ]
+}
