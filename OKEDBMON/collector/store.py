@@ -28,34 +28,6 @@ RETENTION_KINDS = {
         "property": "retention.performance.days",
         "default_days": 14,
     },
-    "active_session": {
-        "label": "Active Session",
-        "table": "active_session",
-        "time_column": "agent_collect_tm",
-        "property": "retention.active_session.days",
-        "default_days": 2,
-    },
-    "session_history": {
-        "label": "Session History",
-        "table": "session_history",
-        "time_column": "agent_collect_tm",
-        "property": "retention.session_history.days",
-        "default_days": 7,
-    },
-    "sql_stat": {
-        "label": "SQL 수행 통계",
-        "table": "sql_stat",
-        "time_column": "agent_collect_tm",
-        "property": "retention.sql_stat.days",
-        "default_days": 14,
-    },
-    "sql_text": {
-        "label": "SQL Text",
-        "table": "sql_text",
-        "time_column": "last_seen",
-        "property": "retention.sql_text.days",
-        "default_days": 30,
-    },
     "event": {
         "label": "이벤트",
         "table": "event_log",
@@ -114,7 +86,8 @@ CREATE TABLE IF NOT EXISTS agent_heartbeat (
     last_seen TEXT,
     status TEXT,
     message TEXT,
-    version TEXT
+    version TEXT,
+    agent_url TEXT
 );
 
 CREATE TABLE IF NOT EXISTS o_performance (
@@ -329,6 +302,9 @@ class Store:
         self.conn.execute("PRAGMA busy_timeout=5000")
         self.conn.execute("PRAGMA foreign_keys=ON")
         self.conn.executescript(SCHEMA)
+        columns = [row[1] for row in self.conn.execute("PRAGMA table_info(agent_heartbeat)")]
+        if "agent_url" not in columns:
+            self.conn.execute("ALTER TABLE agent_heartbeat ADD COLUMN agent_url TEXT")
         self.properties = properties if properties is not None else load_properties()
         if seed:
             self._seed()
@@ -406,6 +382,20 @@ class Store:
                 "UPDATE env_setting SET setting_value=?, updated_at=? WHERE setting_key='db.repository.path'",
                 (self.properties.get("db.repository.path", DEFAULT_REPOSITORY), stamp),
             )
+        moved = ("active_session", "session_history", "sql_stat", "sql_text")
+        self.conn.execute(
+            f"DELETE FROM retention_policy WHERE data_kind IN ({','.join('?' for _ in moved)})",
+            moved,
+        )
+        for table in moved:
+            self.conn.execute(f"DELETE FROM {table}")
+        for key in (
+            "retention.active_session.days",
+            "retention.session_history.days",
+            "retention.sql_stat.days",
+            "retention.sql_text.days",
+        ):
+            self.conn.execute("DELETE FROM env_setting WHERE setting_key=?", (key,))
         if self.setting("agent.token", "") in LEGACY_AGENT_TOKENS:
             self.conn.execute(
                 "UPDATE env_setting SET setting_value=?, updated_at=? WHERE setting_key='agent.token'",
@@ -565,25 +555,23 @@ class Store:
         collect_tm = payload["collect_tm"]
         product = payload.get("product") or ""
         perf = payload.get("performance") or {}
-        sessions = payload.get("active_sessions") or []
-        history = payload.get("session_history") or []
-        sql_texts = payload.get("sql_texts") or []
-        sql_stats = payload.get("sql_stats") or []
         status = payload.get("status") or "ONLINE"
         message = payload.get("message") or ""
+        agent_url = (payload.get("agent_url") or "").strip() or None
         with self._lock:
             self.conn.execute(
                 """
-                INSERT INTO agent_heartbeat (agent_alias, product, last_seen, status, message, version)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO agent_heartbeat (agent_alias, product, last_seen, status, message, version, agent_url)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(agent_alias) DO UPDATE SET
                     product=excluded.product,
                     last_seen=excluded.last_seen,
                     status=excluded.status,
                     message=excluded.message,
-                    version=excluded.version
+                    version=excluded.version,
+                    agent_url=COALESCE(excluded.agent_url, agent_heartbeat.agent_url)
                 """,
-                (alias, product, collect_tm, status, message, payload.get("version") or VERSION),
+                (alias, product, collect_tm, status, message, payload.get("version") or VERSION, agent_url),
             )
             if perf:
                 self.conn.execute(
@@ -628,64 +616,6 @@ class Store:
                     ),
                 )
                 self._raise_threshold_events(alias, collect_tm, perf)
-            self.conn.execute(
-                "DELETE FROM active_session WHERE agent_alias=? AND agent_collect_tm=?",
-                (alias, collect_tm),
-            )
-            for row in sessions:
-                self._insert_session("active_session", alias, collect_tm, row, with_source=False)
-            for row in history:
-                self._insert_session("session_history", alias, collect_tm, row, with_source=True)
-            for row in sql_texts:
-                sql_id = row.get("sql_id")
-                text = row.get("sql_text") or ""
-                if not sql_id or not text:
-                    continue
-                self.conn.execute(
-                    """
-                    INSERT INTO sql_text (
-                        agent_alias, sql_id, sql_text, command_type, db_user, first_seen, last_seen
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(agent_alias, sql_id) DO UPDATE SET
-                        sql_text=excluded.sql_text,
-                        command_type=excluded.command_type,
-                        db_user=excluded.db_user,
-                        last_seen=excluded.last_seen
-                    """,
-                    (
-                        alias,
-                        sql_id,
-                        text,
-                        row.get("command_type") or "",
-                        row.get("db_user") or "",
-                        collect_tm,
-                        collect_tm,
-                    ),
-                )
-            for row in sql_stats:
-                if not row.get("sql_id"):
-                    continue
-                self.conn.execute(
-                    """
-                    INSERT INTO sql_stat (
-                        agent_alias, agent_collect_tm, sql_id, executions, elapsed_ms, cpu_ms,
-                        buffer_gets, disk_reads, rows_processed, db_user, program
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        alias,
-                        collect_tm,
-                        row["sql_id"],
-                        _int(row.get("executions")),
-                        _num(row.get("elapsed_ms")),
-                        _num(row.get("cpu_ms")),
-                        _int(row.get("buffer_gets")),
-                        _int(row.get("disk_reads")),
-                        _int(row.get("rows_processed")),
-                        row.get("db_user") or "",
-                        row.get("program") or "",
-                    ),
-                )
             self.conn.commit()
         return {"accepted": True, "agent_alias": alias, "collect_tm": collect_tm}
 
@@ -904,6 +834,15 @@ class Store:
             ).fetchall()
         return [dict(row) for row in rows]
 
+    def agent_url(self, alias: str) -> str:
+        row = self.conn.execute(
+            "SELECT agent_url FROM agent_heartbeat WHERE agent_alias=?",
+            (alias,),
+        ).fetchone()
+        if row is None or not row["agent_url"]:
+            return ""
+        return row["agent_url"]
+
     def heartbeats(self) -> dict[str, dict]:
         rows = self.conn.execute("SELECT * FROM agent_heartbeat").fetchall()
         return {row["agent_alias"]: dict(row) for row in rows}
@@ -975,7 +914,9 @@ class Store:
         ).fetchall()
         result = []
         for row in policies:
-            meta = RETENTION_KINDS[row["data_kind"]]
+            meta = RETENTION_KINDS.get(row["data_kind"])
+            if meta is None:
+                continue
             count = self.conn.execute(f"SELECT COUNT(*) AS c FROM {meta['table']}").fetchone()["c"]
             result.append(
                 {
@@ -1011,7 +952,9 @@ class Store:
             policies = self.conn.execute("SELECT * FROM retention_policy").fetchall()
             for policy in policies:
                 kind = policy["data_kind"]
-                meta = RETENTION_KINDS[kind]
+                meta = RETENTION_KINDS.get(kind)
+                if meta is None:
+                    continue
                 if not policy["enabled"]:
                     summary.append(
                         {"data_kind": kind, "deleted_rows": 0, "skipped": True, "keep_days": policy["keep_days"]}
@@ -1071,7 +1014,6 @@ class Store:
                 return None
             return round(max(vals), 2)
 
-        top_sql = self.sql_catalog(alias, limit=10)
         return {
             "agent_alias": alias,
             "start": start,
@@ -1087,7 +1029,7 @@ class Store:
                 "tps_avg": avg("tps"),
                 "qps_avg": avg("qps"),
             },
-            "top_sql": top_sql,
+            "top_sql": [],
             "events": self.events(alias, limit=15),
         }
 

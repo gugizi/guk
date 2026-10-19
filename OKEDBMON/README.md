@@ -46,38 +46,24 @@ Python 3.10 이상이 필요합니다. 프로그램은 모두 이 `OKEDBMON` 폴
 
 ## 저장 방식
 
-수집서버는 성능 데이터와 환경 설정을 한 SQLite 파일에 둡니다. 기본 경로는 `data/okedbmon.sqlite`이고 `config/default.properties`의 `db.repository.path`로 바꿉니다. 에이전트는 수집 결과를 파일로 쌓지 않고 `POST /api/ingest`로 보냅니다.
+수집서버는 성능 데이터와 환경 설정을 `data/okedbmon.sqlite`에 둡니다. Active Session, 세션 이력, SQL Text는 각 에이전트의 `data/agents/<별칭>.sqlite`에 둡니다. 수집서버는 성능 숫자만 받고, 세션과 SQL 화면은 그 에이전트에 조회합니다. 에이전트가 알려 주는 주소는 `advertise_host`와 `listen_port`입니다. DB 서버에서는 `advertise_host`를 수집서버가 접속할 수 있는 IP로 바꿉니다.
 
-파일 안에서는 역할이 나뉩니다.
-
-| 구분 | 테이블 | 내용 |
+| 위치 | 테이블 | 내용 |
 | --- | --- | --- |
-| 환경 설정 | `env_setting` | 제품명, `1.0.0.0` 형식 버전, 포트, 임계치, 에이전트 토큰 |
-| 환경 설정 | `mon_instance` | 모니터링 대상 DBMS 등록 정보 |
-| 환경 설정 | `retention_policy` | 데이터 종류별 보관일수 |
-| 환경 설정 | `app_user`, `auth_token` | 로그인 계정과 세션. 비밀번호는 PBKDF2 해시 |
-| 성능 | `o_performance` | 수집 시각별 CPU, 세션 수, Lock, Hit, TPS |
-| 성능 | `active_session` | 그 시각의 세션 스냅샷. 같은 시각은 덮어씀 |
-| 성능 | `session_history` | Active Session 샘플과 완료 SQL 이력. 시각별로 추가 |
-| 성능 | `sql_text` | SQL 문. 인스턴스와 SQL ID 기준으로 마지막 내용만 유지 |
-| 성능 | `sql_stat` | 수집 구간 동안의 수행 횟수와 시간 |
-| 성능 | `event_log` | 임계치를 넘긴 이벤트 |
-
-시각은 `YYYY-MM-DD HH:MM:SS` 문자열이라 보관 주기가 그 문자열보다 오래된 행을 지웁니다. `sql_text`는 `last_seen`을 기준으로 지웁니다. 대상 DB 접속 비밀번호는 에이전트의 `config/agent.json`에만 있습니다.
+| 수집서버 | `env_setting`, `mon_instance`, `app_user` | 제품 설정, 대상 등록, 로그인 |
+| 수집서버 | `o_performance`, `event_log` | CPU, 세션 수, Lock 건수, 임계치 이벤트 |
+| 에이전트 | `active_session` | 그 시각의 세션 스냅샷 |
+| 에이전트 | `session_history` | Active Session 이력 |
+| 에이전트 | `sql_text`, `sql_stat` | SQL 문과 수집 구간 수행 통계 |
 
 ## 보관 주기
 
-화면의 **보관 주기**에서 종류별 일수를 바꿉니다. 수집서버는 설정 간격마다, 그리고 `지금 삭제 실행` 때 기준 시각보다 오래된 행을 지웁니다.
+화면의 **보관 주기**는 두 부분입니다.
 
-| 종류 | 저장 내용 |
-| --- | --- |
-| performance | DB 성능 샘플 |
-| active_session | 수집 시점의 세션 스냅샷 |
-| session_history | Active Session 샘플과 완료 SQL 이력 |
-| sql_stat / sql_text | 수행 통계와 SQL 문 |
-| event | 임계치 이벤트 |
+- 수집서버: 성능과 이벤트의 보관일수
+- 선택한 에이전트: 세션과 SQL의 저장 주기(초), 삭제 주기(초), 종류별 보관일수
 
-보관일수 `0`은 현재 시각보다 이전 데이터를 삭제합니다. 사용 해제한 종류는 지우지 않습니다.
+저장 주기는 세션과 SQL을 에이전트 파일에 기록하는 간격입니다. 삭제 주기는 보관일수가 지난 행을 지우는 작업 간격입니다. 보관일수 `0`은 현재 시각보다 이전 데이터를 삭제합니다. 사용 해제한 종류는 지우지 않습니다.
 
 ## 테스트
 

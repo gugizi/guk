@@ -2,6 +2,8 @@
   "collector_url": "http://127.0.0.1:8080",
   "token": "okedbmon-agent",
   "interval_sec": 5,
+  "listen_host": "0.0.0.0",
+  "advertise_host": "127.0.0.1",
   "targets": [
     {
       "agent_alias": "ORA_PROD",
@@ -11,7 +13,8 @@
       "database": "ORCL",
       "user": "monitor",
       "password": "",
-      "mode": "simulate"
+      "mode": "simulate",
+      "listen_port": 9101
     },
     {
       "agent_alias": "TIB_ERP",
@@ -21,7 +24,8 @@
       "database": "TIBERO",
       "user": "monitor",
       "password": "",
-      "mode": "simulate"
+      "mode": "simulate",
+      "listen_port": 9102
     },
     {
       "agent_alias": "MARIA_WEB",
@@ -31,7 +35,8 @@
       "database": "okedbmon",
       "user": "okedbmon",
       "password": "okedbmon",
-      "mode": "simulate"
+      "mode": "simulate",
+      "listen_port": 9103
     },
     {
       "agent_alias": "PG_ANALYTICS",
@@ -41,7 +46,8 @@
       "database": "okedbmon",
       "user": "okedbmon",
       "password": "okedbmon",
-      "mode": "simulate"
+      "mode": "simulate",
+      "listen_port": 9104
     }
   ]
 }

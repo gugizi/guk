@@ -359,7 +359,7 @@ async function pageRealtime(serial = state.renderSerial) {
       <td>${num(row.elapsed_ms)}</td><td>${esc(row.blocking_sid || "")}</td>
       <td class="sql">${esc((row.sql_text || "").slice(0, 180))}</td>
     </tr>`).join("");
-  shell("실시간", `${alias} 현재 세션과 Lock`, `
+  shell("실시간", `${alias} 현재 세션과 Lock. Active Session은 이 DB 서버의 에이전트에 저장되어 있습니다.`, `
     <div class="toolbar">
       ${currentTarget()}
       <span class="small muted">수집 ${esc(sessions.collect_tm || "-")} · Active ${active.length} / 전체 ${sessions.sessions.length}</span>
@@ -410,7 +410,7 @@ async function pageHistory(serial = state.renderSerial) {
       <td>${esc(row.status)}</td><td>${esc(row.wait_class)}</td><td>${num(row.elapsed_ms)}</td>
       <td>${esc(row.source)}</td><td class="sql">${esc((row.sql_text || "").slice(0, 160))}</td>
     </tr>`).join("");
-  shell("세션 이력", "에이전트가 주기적으로 샘플링한 Active Session과 완료 SQL 이력입니다.", `
+  shell("세션 이력", "에이전트에 저장된 Active Session 이력입니다. 수집서버에는 이 이력을 두지 않습니다.", `
     <div class="toolbar">${currentTarget()}</div>
     <div class="panel" style="overflow:auto"><table><thead><tr><th>수집시각</th><th>SID</th><th>사용자</th><th>상태</th><th>Wait</th><th>ms</th><th>출처</th><th>SQL</th></tr></thead><tbody>${rows || `<tr><td colspan="8" class="muted">이력이 없습니다.</td></tr>`}</tbody></table></div>
     <div class="panel" id="sql-preview" style="margin-top:12px"><div class="sql muted">행을 선택하면 SQL 전문이 보입니다.</div></div>`);
@@ -435,7 +435,7 @@ async function pageSql(serial = state.renderSerial) {
       <td>${num(row.elapsed_ms, 1)}</td><td>${num(row.buffer_gets)}</td><td>${num(row.disk_reads)}</td>
       <td class="sql">${esc((row.sql_text || "").slice(0, 140))}</td>
     </tr>`).join("");
-  shell("SQL Text", "수행된 SQL 문과 수집 구간 합산 통계입니다.", `
+  shell("SQL Text", "수행된 SQL 문은 해당 에이전트에 저장됩니다. 수집 구간 합산 통계도 그 파일에 있습니다.", `
     <div class="toolbar">
       ${currentTarget()}
       <label>검색<br><input id="sql-q" value="${esc(q)}" placeholder="SQL 일부 또는 SQL ID" /></label>
@@ -515,6 +515,7 @@ async function pageReport(serial = state.renderSerial) {
       <div class="kpi"><span>Active 최대</span><strong>${num(summary.active_max, 0)}</strong></div>
       <div class="kpi"><span>Lock 최대</span><strong>${num(summary.lock_max, 0)}</strong></div>
     </div>
+    ${data.sql_error ? `<div class="error">${esc(data.sql_error)}</div>` : ""}
     <div class="panel" style="margin-top:12px"><header><strong>Top SQL</strong></header>
       <table><thead><tr><th>SQL ID</th><th>Elapsed</th><th>수행</th><th>SQL</th></tr></thead><tbody>${sql || `<tr><td colspan="4" class="muted">없음</td></tr>`}</tbody></table>
     </div>`);
@@ -600,7 +601,16 @@ async function pageSettings(serial = state.renderSerial) {
 
 async function pageRetention(serial = state.renderSerial) {
   await ensureDashboard();
+  const alias = state.alias;
   const data = await api("/api/retention");
+  if (!stillCurrent(serial)) return;
+  let agent = null;
+  let agentError = "";
+  try {
+    agent = await api(`/api/agent-retention?alias=${encodeURIComponent(alias)}`);
+  } catch (err) {
+    agentError = err.message;
+  }
   if (!stillCurrent(serial)) return;
   const rows = data.policies.map((item) => `
     <tr>
@@ -612,17 +622,48 @@ async function pageRetention(serial = state.renderSerial) {
       <td>${esc(item.last_purge_at || "-")}</td>
     </tr>`).join("");
   const log = data.log.map((item) => `<tr><td>${esc(item.ran_at)}</td><td>${esc(item.data_kind)}</td><td>${esc(item.keep_days)}</td><td>${num(item.deleted_rows)}</td></tr>`).join("");
-  shell("보관 주기", "성능, 세션, SQL, 이벤트는 각 보관일수가 지난 시각의 데이터부터 삭제됩니다. 0일이면 현재 시각보다 이전 데이터를 모두 지웁니다.", `
+  const agentRows = (agent?.policies || []).map((item) => `
+    <tr>
+      <td>${esc(item.label)}<div class="small muted">${esc(item.table)}</div></td>
+      <td><input data-agent-kind="${esc(item.data_kind)}" data-field="days" type="number" min="0" value="${esc(item.keep_days)}" style="width:90px" /></td>
+      <td><input data-agent-kind="${esc(item.data_kind)}" data-field="enabled" type="checkbox" ${item.enabled ? "checked" : ""} /></td>
+      <td>${num(item.row_count)}</td>
+      <td>${num(item.last_deleted)}</td>
+      <td>${esc(item.last_purge_at || "-")}</td>
+    </tr>`).join("");
+  const agentLog = (agent?.log || []).map((item) => `<tr><td>${esc(item.ran_at)}</td><td>${esc(item.data_kind)}</td><td>${esc(item.keep_days)}</td><td>${num(item.deleted_rows)}</td></tr>`).join("");
+  const agentPanel = agent ? `
+    <div class="panel" style="margin-top:12px">
+      <header><strong>${esc(alias)} 에이전트 저장</strong><span class="small muted">${esc(agent.store_path)}</span></header>
+      <p>Active Session, 세션 이력, SQL Text는 이 에이전트 파일에 저장되고, 여기서 정한 주기로 삭제됩니다.</p>
+      <div class="form-grid">
+        <label>저장 주기(초)<br><input id="agent-save" type="number" min="2" value="${esc(agent.save_interval_sec)}" /></label>
+        <label>삭제 주기(초)<br><input id="agent-purge" type="number" min="15" value="${esc(agent.purge_interval_sec)}" /></label>
+      </div>
+      <table><thead><tr><th>데이터</th><th>보관일수</th><th>사용</th><th>건수</th><th>마지막 삭제</th><th>실행 시각</th></tr></thead><tbody>${agentRows}</tbody></table>
+      <div class="row" style="margin-top:12px">
+        <button class="primary" id="save-agent-retention">에이전트 주기 저장</button>
+        <button class="ghost" id="run-agent-retention">에이전트 지금 삭제</button>
+      </div>
+    </div>
+    <div class="panel" style="margin-top:12px"><header><strong>${esc(alias)} 삭제 이력</strong></header>
+      <table><thead><tr><th>시각</th><th>종류</th><th>보관일</th><th>삭제 건수</th></tr></thead><tbody>${agentLog || `<tr><td colspan="4" class="muted">아직 실행 이력이 없습니다.</td></tr>`}</tbody></table>
+    </div>` : `<div class="error" style="margin-top:12px">${esc(agentError || "에이전트 저장 정보를 가져오지 못했습니다.")}</div>`;
+  shell("보관 주기", "수집서버는 성능과 이벤트만 보관합니다. 세션과 SQL Text의 저장 주기와 삭제 주기는 선택한 에이전트에서 관리합니다.", `
+    <div class="toolbar">${currentTarget()}</div>
     <div class="panel">
+      <header><strong>수집서버</strong></header>
       <table><thead><tr><th>데이터</th><th>보관일수</th><th>사용</th><th>건수</th><th>마지막 삭제</th><th>실행 시각</th></tr></thead><tbody>${rows}</tbody></table>
       <div class="row" style="margin-top:12px">
         <button class="primary" id="save-retention">주기 저장</button>
         <button class="ghost" id="run-retention">지금 삭제 실행</button>
       </div>
     </div>
-    <div class="panel" style="margin-top:12px"><header><strong>삭제 이력</strong></header>
+    <div class="panel" style="margin-top:12px"><header><strong>수집서버 삭제 이력</strong></header>
       <table><thead><tr><th>시각</th><th>종류</th><th>보관일</th><th>삭제 건수</th></tr></thead><tbody>${log || `<tr><td colspan="4" class="muted">아직 실행 이력이 없습니다.</td></tr>`}</tbody></table>
-    </div>`);
+    </div>
+    ${agentPanel}`);
+  bindAlias();
   document.getElementById("save-retention").onclick = saveRetention;
   document.getElementById("run-retention").onclick = async () => {
     await saveRetention(false);
@@ -631,8 +672,41 @@ async function pageRetention(serial = state.renderSerial) {
     state.error = "";
     await pageRetention();
     const note = document.querySelector(".top p");
-    if (note) note.textContent = `삭제 실행 완료. ${deleted.toLocaleString("ko-KR")}건을 정리했습니다.`;
+    if (note) note.textContent = `수집서버 삭제 실행 완료. ${deleted.toLocaleString("ko-KR")}건을 정리했습니다.`;
   };
+  const saveAgent = document.getElementById("save-agent-retention");
+  if (saveAgent) saveAgent.onclick = () => saveAgentRetention(alias);
+  const runAgent = document.getElementById("run-agent-retention");
+  if (runAgent) {
+    runAgent.onclick = async () => {
+      await saveAgentRetention(alias, false);
+      const result = await api(`/api/agent-retention/run?alias=${encodeURIComponent(alias)}`, { method: "POST" });
+      const deleted = (result.summary || []).reduce((sum, item) => sum + (item.deleted_rows || 0), 0);
+      state.error = "";
+      await pageRetention();
+      const note = document.querySelector(".top p");
+      if (note) note.textContent = `${alias} 에이전트에서 ${deleted.toLocaleString("ko-KR")}건을 정리했습니다.`;
+    };
+  }
+}
+
+async function saveAgentRetention(alias, refresh = true) {
+  const grouped = {};
+  document.querySelectorAll("[data-agent-kind]").forEach((input) => {
+    const kind = input.dataset.agentKind;
+    grouped[kind] = grouped[kind] || { data_kind: kind, keep_days: 0, enabled: false };
+    if (input.dataset.field === "days") grouped[kind].keep_days = Number(input.value);
+    if (input.dataset.field === "enabled") grouped[kind].enabled = input.checked;
+  });
+  await api(`/api/agent-retention?alias=${encodeURIComponent(alias)}`, {
+    method: "PUT",
+    body: JSON.stringify({
+      save_interval_sec: Number(document.getElementById("agent-save").value),
+      purge_interval_sec: Number(document.getElementById("agent-purge").value),
+      policies: Object.values(grouped),
+    }),
+  });
+  if (refresh) showPage("retention");
 }
 
 async function saveRetention(refresh = true) {
