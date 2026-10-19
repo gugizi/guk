@@ -5,4 +5,5 @@ if not exist .venv\Scripts\python.exe (
   pause
   goto :eof
 )
+echo This agent collects the single target in config\agent.json.
 .venv\Scripts\python.exe -m agent

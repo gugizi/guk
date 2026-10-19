@@ -8,12 +8,12 @@ Oracle, Tibero, MariaDB, PostgreSQL을 같은 화면에서 보는 모니터링 �
 
 ## 실행
 
-Python 3.10 이상이 필요합니다. 프로그램은 모두 이 `OKEDBMON` 폴더 안에 있습니다. 이 폴더에서 수집서버를 먼저 띄우고, 다른 창에서 에이전트를 띄웁니다.
+Python 3.10 이상이 필요합니다. 프로그램은 모두 이 `OKEDBMON` 폴더 안에 있습니다. 수집서버를 먼저 띄웁니다. 에이전트는 모니터링할 DB 서버마다 하나씩 띄우고, 그 서버의 인스턴스만 수집합니다.
 
-| OS | 수집서버 | 에이전트 |
-| --- | --- | --- |
-| Windows | `run_collector.bat` | `run_agent.bat` |
-| Linux / Unix | `./run_collector.sh` | `./run_agent.sh` |
+| OS | 수집서버 | DB 서버 에이전트 | 한 PC에서 4종 데모 |
+| --- | --- | --- | --- |
+| Windows | `run_collector.bat` | `run_agent.bat` | `run_demo_agent.bat` |
+| Linux / Unix | `./run_collector.sh` | `./run_agent.sh` | `./run_demo_agent.sh` |
 
 처음 실행할 때 `.venv`를 만들고 패키지를 설치합니다. 수집서버를 띄운 PC의 브라우저에서 `http://127.0.0.1:8080/` 을 엽니다. 다른 PC에서는 `http://<수집서버 IP>:8080/` 으로 접속하며, 방화벽에서 8080 포트를 열어야 합니다. 초기 계정은 `admin` / `okedbmon` 입니다.
 
@@ -28,7 +28,10 @@ Python 3.10 이상이 필요합니다. 프로그램은 모두 이 `OKEDBMON` 폴
 | 파일 | 역할 |
 | --- | --- |
 | `config/default.properties` | 수집서버 제목, 포트, 임계치, 기본 보관일수, 에이전트 토큰 |
-| `config/agent.json` | 수집 대상, 접속 정보, `simulate` 또는 `live` |
+| `config/agent.json` | 이 DB 서버의 인스턴스 하나, 접속 정보, `simulate` 또는 `live` |
+| `config/demo-agents.json` | 한 PC 데모 전용. 대상마다 독립된 수집 스레드를 둡니다 |
+
+`config/agent.json`에 대상을 여러 개 넣으면 에이전트는 시작하지 않습니다. 느린 인스턴스가 다른 인스턴스 수집을 밀지 않도록, 프로세스 하나는 인스턴스 하나만 담당합니다. 수집 주기는 그 대상의 `interval_sec`가 있으면 그 값이고, 없으면 설정의 `interval_sec`입니다.
 
 에이전트 모드:
 
@@ -43,38 +46,24 @@ Python 3.10 이상이 필요합니다. 프로그램은 모두 이 `OKEDBMON` 폴
 
 ## 저장 방식
 
-수집서버는 성능 데이터와 환경 설정을 한 SQLite 파일에 둡니다. 기본 경로는 `data/okedbmon.sqlite`이고 `config/default.properties`의 `db.repository.path`로 바꿉니다. 에이전트는 수집 결과를 파일로 쌓지 않고 `POST /api/ingest`로 보냅니다.
+수집서버는 성능 데이터와 환경 설정을 `data/okedbmon.sqlite`에 둡니다. Active Session, 세션 이력, SQL Text는 각 에이전트의 `data/agents/<별칭>.sqlite`에 둡니다. 수집서버는 성능 숫자만 받고, 세션과 SQL 화면은 그 에이전트에 조회합니다. 에이전트가 알려 주는 주소는 `advertise_host`와 `listen_port`입니다. DB 서버에서는 `advertise_host`를 수집서버가 접속할 수 있는 IP로 바꿉니다.
 
-파일 안에서는 역할이 나뉩니다.
-
-| 구분 | 테이블 | 내용 |
+| 위치 | 테이블 | 내용 |
 | --- | --- | --- |
-| 환경 설정 | `env_setting` | 제품명, `1.0.0.0` 형식 버전, 포트, 임계치, 에이전트 토큰 |
-| 환경 설정 | `mon_instance` | 모니터링 대상 DBMS 등록 정보 |
-| 환경 설정 | `retention_policy` | 데이터 종류별 보관일수 |
-| 환경 설정 | `app_user`, `auth_token` | 로그인 계정과 세션. 비밀번호는 PBKDF2 해시 |
-| 성능 | `o_performance` | 수집 시각별 CPU, 세션 수, Lock, Hit, TPS |
-| 성능 | `active_session` | 그 시각의 세션 스냅샷. 같은 시각은 덮어씀 |
-| 성능 | `session_history` | Active Session 샘플과 완료 SQL 이력. 시각별로 추가 |
-| 성능 | `sql_text` | SQL 문. 인스턴스와 SQL ID 기준으로 마지막 내용만 유지 |
-| 성능 | `sql_stat` | 수집 구간 동안의 수행 횟수와 시간 |
-| 성능 | `event_log` | 임계치를 넘긴 이벤트 |
-
-시각은 `YYYY-MM-DD HH:MM:SS` 문자열이라 보관 주기가 그 문자열보다 오래된 행을 지웁니다. `sql_text`는 `last_seen`을 기준으로 지웁니다. 대상 DB 접속 비밀번호는 에이전트의 `config/agent.json`에만 있습니다.
+| 수집서버 | `env_setting`, `mon_instance`, `app_user` | 제품 설정, 대상 등록, 로그인 |
+| 수집서버 | `o_performance`, `event_log` | CPU, 세션 수, Lock 건수, 임계치 이벤트 |
+| 에이전트 | `active_session` | 그 시각의 세션 스냅샷 |
+| 에이전트 | `session_history` | Active Session 이력 |
+| 에이전트 | `sql_text`, `sql_stat` | SQL 문과 수집 구간 수행 통계 |
 
 ## 보관 주기
 
-화면의 **보관 주기**에서 종류별 일수를 바꿉니다. 수집서버는 설정 간격마다, 그리고 `지금 삭제 실행` 때 기준 시각보다 오래된 행을 지웁니다.
+화면의 **보관 주기**는 두 부분입니다.
 
-| 종류 | 저장 내용 |
-| --- | --- |
-| performance | DB 성능 샘플 |
-| active_session | 수집 시점의 세션 스냅샷 |
-| session_history | Active Session 샘플과 완료 SQL 이력 |
-| sql_stat / sql_text | 수행 통계와 SQL 문 |
-| event | 임계치 이벤트 |
+- 수집서버: 성능과 이벤트의 보관일수
+- 선택한 에이전트: 세션과 SQL의 저장 주기(초), 삭제 주기(초), 종류별 보관일수
 
-보관일수 `0`은 현재 시각보다 이전 데이터를 삭제합니다. 사용 해제한 종류는 지우지 않습니다.
+저장 주기는 세션과 SQL을 에이전트 파일에 기록하는 간격입니다. 삭제 주기는 보관일수가 지난 행을 지우는 작업 간격입니다. 보관일수 `0`은 현재 시각보다 이전 데이터를 삭제합니다. 사용 해제한 종류는 지우지 않습니다.
 
 ## 테스트
 

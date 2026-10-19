@@ -107,16 +107,10 @@ def test_login_and_ingest_flow(tmp_path):
     assert "LOCK" in card["alerts"]
     assert "CACHE" in card["alerts"]
 
-    sessions = client.get("/api/sessions/active", params={"alias": "ORA_PROD"}, headers=auth(token)).json()
-    assert len(sessions["sessions"]) == 2
-    assert sessions["locks"][0]["sid"] == 10
-    assert sessions["locks"][0]["children"][0]["sid"] == 11
-
-    history = client.get("/api/sessions/history", params={"alias": "ORA_PROD"}, headers=auth(token)).json()
-    assert history["sessions"][0]["sql_id"] == "def"
-
-    found = client.get("/api/sql", params={"alias": "ORA_PROD", "q": "dual"}, headers=auth(token)).json()
-    assert found["sql"][0]["sql_text"].startswith("SELECT 1")
+    stored = store.conn.execute("SELECT COUNT(*) AS c FROM active_session").fetchone()["c"]
+    assert stored == 0
+    missing = client.get("/api/sessions/active", params={"alias": "ORA_PROD"}, headers=auth(token))
+    assert missing.status_code == 503
     store.close()
 
 
@@ -132,28 +126,89 @@ def test_retention_deletes_only_expired_rows(tmp_path):
         headers=auth(token),
         json={"policies": [
             {"data_kind": "performance", "keep_days": 3, "enabled": True},
-            {"data_kind": "active_session", "keep_days": 3, "enabled": True},
-            {"data_kind": "session_history", "keep_days": 3, "enabled": True},
-            {"data_kind": "sql_stat", "keep_days": 3, "enabled": True},
-            {"data_kind": "sql_text", "keep_days": 3, "enabled": True},
             {"data_kind": "event", "keep_days": 30, "enabled": False},
         ]},
     )
     summary = client.post("/api/retention/run", headers=auth(token)).json()["summary"]
     deleted = {item["data_kind"]: item["deleted_rows"] for item in summary}
-    assert deleted["performance"] == 1
+    assert deleted == {"performance": 1, "event": 0}
+    kinds = {item["data_kind"] for item in client.get("/api/retention", headers=auth(token)).json()["policies"]}
+    assert kinds == {"performance", "event"}
+    store.close()
+
+
+def test_agent_keeps_sessions_and_sql(tmp_path):
+    import socket
+    import threading
+    import time
+
+    import uvicorn
+
+    from agent.localstore import AgentStore
+    from agent.query import create_agent_app
+
+    local = AgentStore(tmp_path / "agent.sqlite", "ORA_PROD", save_interval_sec=5, purge_interval_sec=60)
+    old = datetime.now() - timedelta(days=10)
+    fresh = datetime.now()
+    local.save_sample(sample_payload(moment=old, sql="SELECT old_row FROM dual", sql_key="old"))
+    local.save_sample(sample_payload(moment=fresh, sql="SELECT fresh_row FROM dual", sql_key="new"))
+    local.update_retention([
+        {"data_kind": "active_session", "keep_days": 3, "enabled": True},
+        {"data_kind": "session_history", "keep_days": 3, "enabled": True},
+        {"data_kind": "sql_text", "keep_days": 3, "enabled": True},
+        {"data_kind": "sql_stat", "keep_days": 3, "enabled": True},
+    ])
+    deleted = {item["data_kind"]: item["deleted_rows"] for item in local.purge()}
     assert deleted["active_session"] == 2
     assert deleted["session_history"] == 1
-    assert deleted["sql_stat"] == 1
     assert deleted["sql_text"] == 1
-    assert deleted["event"] == 0
+    assert local.current_sessions()[0]["agent_collect_tm"] == now_text(fresh)
+    assert local.sql_catalog("old_row") == []
+    assert local.sql_catalog("fresh")[0]["sql_text"].startswith("SELECT fresh")
 
-    left = client.get("/api/sql", params={"alias": "ORA_PROD", "q": "fresh"}, headers=auth(token)).json()
-    assert len(left["sql"]) == 1
-    gone = client.get("/api/sql", params={"alias": "ORA_PROD", "q": "old_row"}, headers=auth(token)).json()
-    assert gone["sql"] == []
-    current = client.get("/api/sessions/active", params={"alias": "ORA_PROD"}, headers=auth(token)).json()
-    assert current["sessions"][0]["agent_collect_tm"] == now_text(fresh)
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    app = create_agent_app(local, "okedbmon-agent")
+    config = uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
+    server = uvicorn.Server(config)
+    server.install_signal_handlers = lambda: None
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.time() + 5
+    while time.time() < deadline and not server.started:
+        time.sleep(0.05)
+
+    store, client = build(tmp_path)
+    token = login(client)
+    accepted = client.post(
+        "/api/ingest",
+        json={**sample_payload(), "agent_url": f"http://127.0.0.1:{port}"},
+        headers={"X-Agent-Token": "okedbmon-agent"},
+    )
+    assert accepted.status_code == 200
+    assert store.conn.execute("SELECT COUNT(*) AS c FROM sql_text").fetchone()["c"] == 0
+    sessions = client.get("/api/sessions/active", params={"alias": "ORA_PROD"}, headers=auth(token)).json()
+    assert sessions["locks"][0]["sid"] == 10
+    assert sessions["locks"][0]["children"][0]["sid"] == 11
+    saved = client.put(
+        "/api/agent-retention",
+        params={"alias": "ORA_PROD"},
+        headers=auth(token),
+        json={
+            "save_interval_sec": 30,
+            "purge_interval_sec": 120,
+            "policies": [{"data_kind": "sql_text", "keep_days": 9, "enabled": True}],
+        },
+    )
+    assert saved.status_code == 200
+    body = saved.json()
+    assert body["save_interval_sec"] == 30
+    assert body["purge_interval_sec"] == 120
+    assert next(item["keep_days"] for item in body["policies"] if item["data_kind"] == "sql_text") == 9
+    server.should_exit = True
+    thread.join(timeout=3)
+    local.close()
     store.close()
 
 
@@ -256,7 +311,42 @@ def test_host_metrics_from_proc(tmp_path):
     assert read_host_metrics(proc)["mem_usage"] == 60.0
 
 
-def test_agent_config_roundtrip():
+def test_agent_config_is_one_instance():
+    from agent.runtime import AgentConfigError, demo_targets, resolve_target
+
     config = json.loads(Path("config/agent.json").read_text(encoding="utf-8"))
-    products = {item["product"] for item in config["targets"]}
+    assert "targets" not in config
+    target = resolve_target(config)
+    assert target["agent_alias"] == "ORA_PROD"
+    assert target["product"] == "ORACLE"
+    assert resolve_target({"targets": [target]})["agent_alias"] == "ORA_PROD"
+    try:
+        resolve_target({"targets": [target, dict(target, agent_alias="OTHER")]})
+    except AgentConfigError as exc:
+        assert "인스턴스만" in str(exc)
+    else:
+        raise AssertionError("several targets must be rejected")
+
+    demo = json.loads(Path("config/demo-agents.json").read_text(encoding="utf-8"))
+    products = {item["product"] for item in demo_targets(demo)}
     assert products == {"ORACLE", "TIBERO", "MARIADB", "POSTGRESQL"}
+
+
+def test_demo_targets_collect_in_parallel():
+    import time
+
+    from agent.demo import run_targets_once
+
+    def collect(config, target):
+        time.sleep(0.35 if target["agent_alias"] == "SLOW" else 0.05)
+        return {"agent_alias": target["agent_alias"]}
+
+    started = time.perf_counter()
+    rows = run_targets_once(
+        {},
+        [{"agent_alias": "SLOW"}, {"agent_alias": "FAST"}, {"agent_alias": "FAST2"}],
+        collect,
+    )
+    elapsed = time.perf_counter() - started
+    assert [row["agent_alias"] for row in rows] == ["SLOW", "FAST", "FAST2"]
+    assert elapsed < 0.55
