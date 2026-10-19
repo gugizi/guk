@@ -256,7 +256,42 @@ def test_host_metrics_from_proc(tmp_path):
     assert read_host_metrics(proc)["mem_usage"] == 60.0
 
 
-def test_agent_config_roundtrip():
+def test_agent_config_is_one_instance():
+    from agent.runtime import AgentConfigError, demo_targets, resolve_target
+
     config = json.loads(Path("config/agent.json").read_text(encoding="utf-8"))
-    products = {item["product"] for item in config["targets"]}
+    assert "targets" not in config
+    target = resolve_target(config)
+    assert target["agent_alias"] == "ORA_PROD"
+    assert target["product"] == "ORACLE"
+    assert resolve_target({"targets": [target]})["agent_alias"] == "ORA_PROD"
+    try:
+        resolve_target({"targets": [target, dict(target, agent_alias="OTHER")]})
+    except AgentConfigError as exc:
+        assert "인스턴스만" in str(exc)
+    else:
+        raise AssertionError("several targets must be rejected")
+
+    demo = json.loads(Path("config/demo-agents.json").read_text(encoding="utf-8"))
+    products = {item["product"] for item in demo_targets(demo)}
     assert products == {"ORACLE", "TIBERO", "MARIADB", "POSTGRESQL"}
+
+
+def test_demo_targets_collect_in_parallel():
+    import time
+
+    from agent.demo import run_targets_once
+
+    def collect(config, target):
+        time.sleep(0.35 if target["agent_alias"] == "SLOW" else 0.05)
+        return {"agent_alias": target["agent_alias"]}
+
+    started = time.perf_counter()
+    rows = run_targets_once(
+        {},
+        [{"agent_alias": "SLOW"}, {"agent_alias": "FAST"}, {"agent_alias": "FAST2"}],
+        collect,
+    )
+    elapsed = time.perf_counter() - started
+    assert [row["agent_alias"] for row in rows] == ["SLOW", "FAST", "FAST2"]
+    assert elapsed < 0.55

@@ -8,12 +8,12 @@ Oracle, Tibero, MariaDB, PostgreSQL을 같은 화면에서 보는 모니터링 �
 
 ## 실행
 
-Python 3.10 이상이 필요합니다. 프로그램은 모두 이 `OKEDBMON` 폴더 안에 있습니다. 이 폴더에서 수집서버를 먼저 띄우고, 다른 창에서 에이전트를 띄웁니다.
+Python 3.10 이상이 필요합니다. 프로그램은 모두 이 `OKEDBMON` 폴더 안에 있습니다. 수집서버를 먼저 띄웁니다. 에이전트는 모니터링할 DB 서버마다 하나씩 띄우고, 그 서버의 인스턴스만 수집합니다.
 
-| OS | 수집서버 | 에이전트 |
-| --- | --- | --- |
-| Windows | `run_collector.bat` | `run_agent.bat` |
-| Linux / Unix | `./run_collector.sh` | `./run_agent.sh` |
+| OS | 수집서버 | DB 서버 에이전트 | 한 PC에서 4종 데모 |
+| --- | --- | --- | --- |
+| Windows | `run_collector.bat` | `run_agent.bat` | `run_demo_agent.bat` |
+| Linux / Unix | `./run_collector.sh` | `./run_agent.sh` | `./run_demo_agent.sh` |
 
 처음 실행할 때 `.venv`를 만들고 패키지를 설치합니다. 수집서버를 띄운 PC의 브라우저에서 `http://127.0.0.1:8080/` 을 엽니다. 다른 PC에서는 `http://<수집서버 IP>:8080/` 으로 접속하며, 방화벽에서 8080 포트를 열어야 합니다. 초기 계정은 `admin` / `okedbmon` 입니다.
 
@@ -28,7 +28,10 @@ Python 3.10 이상이 필요합니다. 프로그램은 모두 이 `OKEDBMON` 폴
 | 파일 | 역할 |
 | --- | --- |
 | `config/default.properties` | 수집서버 제목, 포트, 임계치, 기본 보관일수, 에이전트 토큰 |
-| `config/agent.json` | 수집 대상, 접속 정보, `simulate` 또는 `live` |
+| `config/agent.json` | 이 DB 서버의 인스턴스 하나, 접속 정보, `simulate` 또는 `live` |
+| `config/demo-agents.json` | 한 PC 데모 전용. 대상마다 독립된 수집 스레드를 둡니다 |
+
+`config/agent.json`에 대상을 여러 개 넣으면 에이전트는 시작하지 않습니다. 느린 인스턴스가 다른 인스턴스 수집을 밀지 않도록, 프로세스 하나는 인스턴스 하나만 담당합니다. 수집 주기는 그 대상의 `interval_sec`가 있으면 그 값이고, 없으면 설정의 `interval_sec`입니다.
 
 에이전트 모드:
 
