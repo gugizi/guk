@@ -1,0 +1,29 @@
+# 대상 Galera 노드 1의 샘플. 노드마다 server 관련 값만 바꾼다.
+# wsrep_provider 경로는 패키지에 맞게 확인한다.
+# log_bin 경로는 클러스터의 모든 노드에서 같아야 한다.
+
+[mysqld]
+binlog_format = ROW
+default_storage_engine = InnoDB
+innodb_autoinc_lock_mode = 2
+bind-address = 0.0.0.0
+
+log_bin = /var/log/mysql/mysql-bin
+log_slave_updates = ON
+binlog_expire_logs_seconds = 604800
+
+# 클러스터 안에서는 같은 server_id, 클러스터끼리는 다른 값.
+server_id = 200
+# 노드마다 다른 값. wsrep_gtid_domain_id 와 겹치지 않는다.
+gtid_domain_id = 221
+# 클러스터 안에서는 같은 값. 상대 클러스터와는 다른 값.
+wsrep_gtid_domain_id = 20
+wsrep_gtid_mode = ON
+
+wsrep_on = ON
+wsrep_provider = /usr/lib/galera/libgalera_smm.so
+wsrep_cluster_name = appdb_target
+wsrep_cluster_address = gcomm://10.0.2.21,10.0.2.22,10.0.2.23
+wsrep_node_name = target-1
+wsrep_node_address = 10.0.2.21
+wsrep_sst_method = mariabackup

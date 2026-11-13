@@ -1,0 +1,5 @@
+docs/mariadb-migration/scripts/config.env
+docs/mariadb-migration/scripts/source.cnf
+docs/mariadb-migration/scripts/target.cnf
+docs/mariadb-migration/scripts/dump.cnf
+docs/mariadb-migration/scripts/backup.cnf
