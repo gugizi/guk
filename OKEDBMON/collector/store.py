@@ -114,7 +114,8 @@ CREATE TABLE IF NOT EXISTS agent_heartbeat (
     last_seen TEXT,
     status TEXT,
     message TEXT,
-    version TEXT
+    version TEXT,
+    agent_url TEXT
 );
 
 CREATE TABLE IF NOT EXISTS o_performance (
@@ -323,18 +324,38 @@ class Store:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
-        self.conn = sqlite3.connect(self.path, check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.execute("PRAGMA busy_timeout=5000")
-        self.conn.execute("PRAGMA foreign_keys=ON")
+        self._local = threading.local()
         self.conn.executescript(SCHEMA)
+        columns = [row[1] for row in self.conn.execute("PRAGMA table_info(agent_heartbeat)")]
+        if "agent_url" not in columns:
+            self.conn.execute("ALTER TABLE agent_heartbeat ADD COLUMN agent_url TEXT")
         self.properties = properties if properties is not None else load_properties()
         if seed:
             self._seed()
 
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.path, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA foreign_keys=ON")
+        return conn
+
+    @property
+    def conn(self) -> sqlite3.Connection:
+        # uvicorn runs each request on a worker thread. One shared connection
+        # drops committed rows, including a login token issued a moment earlier.
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = self._connect()
+            self._local.conn = conn
+        return conn
+
     def close(self) -> None:
-        self.conn.close()
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            conn.close()
+            self._local.conn = None
 
     def _seed(self) -> None:
         with self._lock:
@@ -474,15 +495,17 @@ class Store:
         return token
 
     def user_for_token(self, token: str) -> dict | None:
-        row = self.conn.execute(
-            """
-            SELECT u.user_id, u.display_name, u.role, t.expires_at
-            FROM auth_token t
-            JOIN app_user u ON u.user_id = t.user_id
-            WHERE t.token=?
-            """,
-            (token,),
-        ).fetchone()
+        with self._lock:
+            self.conn.commit()
+            row = self.conn.execute(
+                """
+                SELECT u.user_id, u.display_name, u.role, t.expires_at
+                FROM auth_token t
+                JOIN app_user u ON u.user_id = t.user_id
+                WHERE t.token=?
+                """,
+                (token,),
+            ).fetchone()
         if row is None or row["expires_at"] < now_text():
             return None
         return {"user_id": row["user_id"], "display_name": row["display_name"], "role": row["role"]}
@@ -571,19 +594,21 @@ class Store:
         sql_stats = payload.get("sql_stats") or []
         status = payload.get("status") or "ONLINE"
         message = payload.get("message") or ""
+        agent_url = (payload.get("agent_url") or "").strip() or None
         with self._lock:
             self.conn.execute(
                 """
-                INSERT INTO agent_heartbeat (agent_alias, product, last_seen, status, message, version)
-                VALUES (?, ?, ?, ?, ?, ?)
+                INSERT INTO agent_heartbeat (agent_alias, product, last_seen, status, message, version, agent_url)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(agent_alias) DO UPDATE SET
                     product=excluded.product,
                     last_seen=excluded.last_seen,
                     status=excluded.status,
                     message=excluded.message,
-                    version=excluded.version
+                    version=excluded.version,
+                    agent_url=COALESCE(excluded.agent_url, agent_heartbeat.agent_url)
                 """,
-                (alias, product, collect_tm, status, message, payload.get("version") or VERSION),
+                (alias, product, collect_tm, status, message, payload.get("version") or VERSION, agent_url),
             )
             if perf:
                 self.conn.execute(
@@ -832,12 +857,15 @@ class Store:
         ).fetchall()
         return [_perf_dict(row) for row in rows]
 
-    def current_sessions(self, alias: str) -> list[dict]:
-        latest = self.conn.execute(
-            "SELECT MAX(agent_collect_tm) AS tm FROM active_session WHERE agent_alias=?",
-            (alias,),
-        ).fetchone()
-        if latest is None or latest["tm"] is None:
+    def current_sessions(self, alias: str, at: str | None = None) -> list[dict]:
+        moment = (at or "").strip()
+        if not moment:
+            latest = self.conn.execute(
+                "SELECT MAX(agent_collect_tm) AS tm FROM active_session WHERE agent_alias=?",
+                (alias,),
+            ).fetchone()
+            moment = "" if latest is None or latest["tm"] is None else latest["tm"]
+        if not moment:
             return []
         rows = self.conn.execute(
             """
@@ -845,9 +873,76 @@ class Store:
             WHERE agent_alias=? AND agent_collect_tm=?
             ORDER BY CASE status WHEN 'ACTIVE' THEN 0 ELSE 1 END, elapsed_ms DESC
             """,
-            (alias, latest["tm"]),
+            (alias, moment),
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def session_times(self, alias: str, limit: int = 120) -> list[str]:
+        return [row["collect_tm"] for row in reversed(self.session_series(alias, limit))]
+
+    def session_series(self, alias: str, limit: int = 120) -> list[dict]:
+        rows = self.conn.execute(
+            """
+            SELECT agent_collect_tm AS collect_tm,
+                   SUM(CASE WHEN status='ACTIVE' THEN 1 ELSE 0 END) AS active_sessions,
+                   COUNT(*) AS connected_sessions
+            FROM active_session
+            WHERE agent_alias=?
+            GROUP BY agent_collect_tm
+            ORDER BY agent_collect_tm DESC
+            LIMIT ?
+            """,
+            (alias, limit),
+        ).fetchall()
+        return [dict(row) for row in reversed(rows)]
+
+    def sql_detail(self, alias: str, sql_id: str) -> dict | None:
+        text = self.conn.execute(
+            "SELECT * FROM sql_text WHERE agent_alias=? AND sql_id=?",
+            (alias, sql_id),
+        ).fetchone()
+        if text is None:
+            return None
+        totals = self.conn.execute(
+            """
+            SELECT COALESCE(SUM(executions), 0) AS executions,
+                   COALESCE(SUM(elapsed_ms), 0) AS elapsed_ms,
+                   COALESCE(SUM(cpu_ms), 0) AS cpu_ms,
+                   COALESCE(SUM(buffer_gets), 0) AS buffer_gets,
+                   COALESCE(SUM(disk_reads), 0) AS disk_reads,
+                   COALESCE(SUM(rows_processed), 0) AS rows_processed
+            FROM sql_stat
+            WHERE agent_alias=? AND sql_id=?
+            """,
+            (alias, sql_id),
+        ).fetchone()
+        series = self.conn.execute(
+            """
+            SELECT agent_collect_tm, executions, elapsed_ms, cpu_ms, buffer_gets, disk_reads, rows_processed
+            FROM sql_stat
+            WHERE agent_alias=? AND sql_id=?
+            ORDER BY agent_collect_tm DESC
+            LIMIT 40
+            """,
+            (alias, sql_id),
+        ).fetchall()
+        trace = self.conn.execute(
+            """
+            SELECT agent_collect_tm, sid, serial_number, db_user, program, machine, status,
+                   wait_class, wait_event, elapsed_ms, blocking_sid
+            FROM session_history
+            WHERE agent_alias=? AND sql_id=?
+            ORDER BY agent_collect_tm DESC, elapsed_ms DESC
+            LIMIT 40
+            """,
+            (alias, sql_id),
+        ).fetchall()
+        return {
+            "sql": dict(text),
+            "stats": dict(totals),
+            "series": [dict(row) for row in reversed(series)],
+            "trace": [dict(row) for row in trace],
+        }
 
     def session_history(
         self, alias: str, start: str, end: str, sql_id: str = "", limit: int = 200
@@ -903,6 +998,15 @@ class Store:
                 (limit,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def agent_url(self, alias: str) -> str:
+        row = self.conn.execute(
+            "SELECT agent_url FROM agent_heartbeat WHERE agent_alias=?",
+            (alias,),
+        ).fetchone()
+        if row is None or not row["agent_url"]:
+            return ""
+        return row["agent_url"]
 
     def heartbeats(self) -> dict[str, dict]:
         rows = self.conn.execute("SELECT * FROM agent_heartbeat").fetchall()
@@ -975,7 +1079,9 @@ class Store:
         ).fetchall()
         result = []
         for row in policies:
-            meta = RETENTION_KINDS[row["data_kind"]]
+            meta = RETENTION_KINDS.get(row["data_kind"])
+            if meta is None:
+                continue
             count = self.conn.execute(f"SELECT COUNT(*) AS c FROM {meta['table']}").fetchone()["c"]
             result.append(
                 {
@@ -1011,7 +1117,9 @@ class Store:
             policies = self.conn.execute("SELECT * FROM retention_policy").fetchall()
             for policy in policies:
                 kind = policy["data_kind"]
-                meta = RETENTION_KINDS[kind]
+                meta = RETENTION_KINDS.get(kind)
+                if meta is None:
+                    continue
                 if not policy["enabled"]:
                     summary.append(
                         {"data_kind": kind, "deleted_rows": 0, "skipped": True, "keep_days": policy["keep_days"]}
@@ -1071,7 +1179,6 @@ class Store:
                 return None
             return round(max(vals), 2)
 
-        top_sql = self.sql_catalog(alias, limit=10)
         return {
             "agent_alias": alias,
             "start": start,
@@ -1087,7 +1194,7 @@ class Store:
                 "tps_avg": avg("tps"),
                 "qps_avg": avg("qps"),
             },
-            "top_sql": top_sql,
+            "top_sql": self.sql_catalog(alias, limit=10),
             "events": self.events(alias, limit=15),
         }
 

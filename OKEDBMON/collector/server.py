@@ -57,6 +57,7 @@ class IngestBody(BaseModel):
     version: str = VERSION
     status: str = "ONLINE"
     message: str = ""
+    agent_url: str = ""
     performance: dict | None = None
     active_sessions: list[dict] = Field(default_factory=list)
     session_history: list[dict] = Field(default_factory=list)
@@ -166,10 +167,22 @@ def create_app(store: Store | None = None) -> FastAPI:
         start_text = start or now_text(datetime.now() - timedelta(hours=1))
         return {"series": store.performance_series(alias, start_text, end_text)}
 
+    @app.get("/api/sessions/times")
+    def session_times(alias: str, user: dict = Depends(current_user)):
+        return {"times": store.session_times(alias)}
+
+    @app.get("/api/sessions/series")
+    def session_series(alias: str, user: dict = Depends(current_user)):
+        return {"points": store.session_series(alias)}
+
     @app.get("/api/sessions/active")
-    def active_sessions(alias: str, user: dict = Depends(current_user)):
-        rows = store.current_sessions(alias)
-        return {"collect_tm": rows[0]["agent_collect_tm"] if rows else None, "sessions": rows, "locks": _lock_tree(rows)}
+    def active_sessions(alias: str, at: str = "", user: dict = Depends(current_user)):
+        rows = store.current_sessions(alias, at)
+        return {
+            "collect_tm": rows[0]["agent_collect_tm"] if rows else (at or None),
+            "sessions": rows,
+            "locks": _lock_tree(rows),
+        }
 
     @app.get("/api/sessions/history")
     def session_history(
@@ -184,8 +197,15 @@ def create_app(store: Store | None = None) -> FastAPI:
         return {"sessions": store.session_history(alias, start_text, end_text, sql_id)}
 
     @app.get("/api/sql")
-    def sql_list(alias: str, q: str = "", user: dict = Depends(current_user)):
-        return {"sql": store.sql_catalog(alias, q)}
+    def sql_list(alias: str, q: str = "", limit: int = 80, user: dict = Depends(current_user)):
+        return {"sql": store.sql_catalog(alias, q, limit)}
+
+    @app.get("/api/sql/detail")
+    def sql_detail(alias: str, sql_id: str, user: dict = Depends(current_user)):
+        detail = store.sql_detail(alias, sql_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="SQL을 찾지 못했습니다.")
+        return detail
 
     @app.get("/api/events")
     def events(alias: str = "", user: dict = Depends(current_user)):

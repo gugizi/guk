@@ -107,16 +107,15 @@ def test_login_and_ingest_flow(tmp_path):
     assert "LOCK" in card["alerts"]
     assert "CACHE" in card["alerts"]
 
-    sessions = client.get("/api/sessions/active", params={"alias": "ORA_PROD"}, headers=auth(token)).json()
-    assert len(sessions["sessions"]) == 2
-    assert sessions["locks"][0]["sid"] == 10
-    assert sessions["locks"][0]["children"][0]["sid"] == 11
-
-    history = client.get("/api/sessions/history", params={"alias": "ORA_PROD"}, headers=auth(token)).json()
-    assert history["sessions"][0]["sql_id"] == "def"
-
-    found = client.get("/api/sql", params={"alias": "ORA_PROD", "q": "dual"}, headers=auth(token)).json()
-    assert found["sql"][0]["sql_text"].startswith("SELECT 1")
+    stored = store.conn.execute("SELECT COUNT(*) AS c FROM active_session").fetchone()["c"]
+    assert stored == 2
+    sessions = client.get("/api/sessions/active", params={"alias": "ORA_PROD"}, headers=auth(token))
+    assert sessions.status_code == 200
+    body = sessions.json()
+    assert body["locks"][0]["sid"] == 10
+    assert body["locks"][0]["children"][0]["sid"] == 11
+    sql = client.get("/api/sql", params={"alias": "ORA_PROD", "q": "dual"}, headers=auth(token)).json()
+    assert sql["sql"][0]["sql_text"].startswith("SELECT 1")
     store.close()
 
 
@@ -134,26 +133,75 @@ def test_retention_deletes_only_expired_rows(tmp_path):
             {"data_kind": "performance", "keep_days": 3, "enabled": True},
             {"data_kind": "active_session", "keep_days": 3, "enabled": True},
             {"data_kind": "session_history", "keep_days": 3, "enabled": True},
-            {"data_kind": "sql_stat", "keep_days": 3, "enabled": True},
             {"data_kind": "sql_text", "keep_days": 3, "enabled": True},
+            {"data_kind": "sql_stat", "keep_days": 3, "enabled": True},
             {"data_kind": "event", "keep_days": 30, "enabled": False},
         ]},
     )
     summary = client.post("/api/retention/run", headers=auth(token)).json()["summary"]
     deleted = {item["data_kind"]: item["deleted_rows"] for item in summary}
     assert deleted["performance"] == 1
-    assert deleted["active_session"] == 2
-    assert deleted["session_history"] == 1
-    assert deleted["sql_stat"] == 1
-    assert deleted["sql_text"] == 1
     assert deleted["event"] == 0
+    assert deleted["sql_text"] == 1
+    assert store.conn.execute("SELECT COUNT(*) AS c FROM sql_text").fetchone()["c"] == 1
+    kinds = {item["data_kind"] for item in client.get("/api/retention", headers=auth(token)).json()["policies"]}
+    assert kinds == {"performance", "active_session", "session_history", "sql_stat", "sql_text", "event"}
+    store.close()
 
-    left = client.get("/api/sql", params={"alias": "ORA_PROD", "q": "fresh"}, headers=auth(token)).json()
-    assert len(left["sql"]) == 1
-    gone = client.get("/api/sql", params={"alias": "ORA_PROD", "q": "old_row"}, headers=auth(token)).json()
-    assert gone["sql"] == []
-    current = client.get("/api/sessions/active", params={"alias": "ORA_PROD"}, headers=auth(token)).json()
-    assert current["sessions"][0]["agent_collect_tm"] == now_text(fresh)
+
+def test_collector_keeps_sessions_after_ingest(tmp_path):
+    store, client = build(tmp_path)
+    token = login(client)
+    fresh = datetime.now()
+    client.post(
+        "/api/ingest",
+        json=sample_payload(moment=fresh, sql="SELECT fresh_row FROM dual", sql_key="new"),
+        headers={"X-Agent-Token": "okedbmon-agent"},
+    )
+    assert store.current_sessions("ORA_PROD")[0]["agent_collect_tm"] == now_text(fresh)
+    assert store.sql_catalog("ORA_PROD", "fresh")[0]["sql_text"].startswith("SELECT fresh")
+    report = client.get("/api/report", params={"alias": "ORA_PROD"}, headers=auth(token)).json()
+    assert report["top_sql"][0]["sql_id"] == "new"
+    store.close()
+
+
+def test_point_in_time_session_and_sql_detail(tmp_path):
+    store, client = build(tmp_path)
+    token = login(client)
+    older = datetime.now() - timedelta(minutes=30)
+    fresh = datetime.now()
+    old_body = sample_payload(moment=older, sql="SELECT old_row FROM dual", sql_key="old")
+    old_body["session_history"][0]["sql_id"] = "old"
+    old_body["session_history"][0]["wait_class"] = "User I/O"
+    client.post("/api/ingest", json=old_body, headers={"X-Agent-Token": "okedbmon-agent"})
+    client.post(
+        "/api/ingest",
+        json=sample_payload(moment=fresh, sql="SELECT fresh_row FROM dual", sql_key="new"),
+        headers={"X-Agent-Token": "okedbmon-agent"},
+    )
+    times = client.get("/api/sessions/times", params={"alias": "ORA_PROD"}, headers=auth(token)).json()["times"]
+    assert times[0] == now_text(fresh)
+    assert now_text(older) in times
+    past = client.get(
+        "/api/sessions/active",
+        params={"alias": "ORA_PROD", "at": now_text(older)},
+        headers=auth(token),
+    ).json()
+    assert past["collect_tm"] == now_text(older)
+    assert any(row["sql_id"] == "old" for row in past["sessions"])
+    series = client.get("/api/sessions/series", params={"alias": "ORA_PROD"}, headers=auth(token)).json()["points"]
+    assert [row["collect_tm"] for row in series] == [now_text(older), now_text(fresh)]
+    assert series[0]["active_sessions"] == 2
+    detail = client.get(
+        "/api/sql/detail",
+        params={"alias": "ORA_PROD", "sql_id": "old"},
+        headers=auth(token),
+    ).json()
+    assert detail["sql"]["sql_text"].startswith("SELECT old_row")
+    assert detail["stats"]["executions"] == 4
+    assert detail["trace"][0]["wait_class"] == "User I/O"
+    assert detail["trace"][0]["sid"] == 11
+    assert client.get("/api/sql/detail", params={"alias": "ORA_PROD", "sql_id": "missing"}, headers=auth(token)).status_code == 404
     store.close()
 
 
@@ -256,7 +304,50 @@ def test_host_metrics_from_proc(tmp_path):
     assert read_host_metrics(proc)["mem_usage"] == 60.0
 
 
-def test_agent_config_roundtrip():
+def test_agent_config_is_one_instance():
+    from agent.runtime import AgentConfigError, resolve_target
+
     config = json.loads(Path("config/agent.json").read_text(encoding="utf-8"))
-    products = {item["product"] for item in config["targets"]}
-    assert products == {"ORACLE", "TIBERO", "MARIADB", "POSTGRESQL"}
+    assert "targets" not in config
+    target = resolve_target(config)
+    assert target["agent_alias"] == "ORA_PROD"
+    assert target["product"] == "ORACLE"
+    assert resolve_target({"targets": [target]})["agent_alias"] == "ORA_PROD"
+    try:
+        resolve_target({"targets": [target, dict(target, agent_alias="OTHER")]})
+    except AgentConfigError as exc:
+        assert "인스턴스만" in str(exc)
+    else:
+        raise AssertionError("several targets must be rejected")
+
+
+def test_login_token_stays_visible_while_ingest_runs(tmp_path):
+    import threading
+
+    store, client = build(tmp_path)
+    token = login(client)
+    stop = threading.Event()
+    errors = []
+
+    def writer():
+        while not stop.is_set():
+            store.ingest(sample_payload())
+
+    def reader():
+        for _ in range(40):
+            if store.user_for_token(token) is None:
+                errors.append("missing")
+            response = client.get("/api/dashboard", headers=auth(token))
+            if response.status_code != 200:
+                errors.append(str(response.status_code))
+
+    threads = [threading.Thread(target=writer)]
+    threads.extend(threading.Thread(target=reader) for _ in range(3))
+    for thread in threads:
+        thread.start()
+    for thread in threads[1:]:
+        thread.join()
+    stop.set()
+    threads[0].join()
+    store.close()
+    assert errors == []
