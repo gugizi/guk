@@ -18,12 +18,13 @@ const state = {
 const MENUS = [
   ["실시간", [
     ["current", "Current"],
-    ["session", "Session"],
+    ["session", "Active Session"],
     ["lock", "Lock"],
     ["event", "Event"],
   ]],
   ["성능 분석", [
     ["history", "Session History"],
+    ["snapshot", "시점별 Session"],
     ["sql", "SQL"],
     ["trend", "추이"],
     ["report", "점검 요약"],
@@ -36,7 +37,8 @@ const MENUS = [
 
 const PAGE_META = {
   current: ["실시간", "Current"],
-  session: ["실시간", "Session"],
+  session: ["실시간", "Active Session"],
+  snapshot: ["성능 분석", "시점별 Active Session"],
   lock: ["실시간", "Lock"],
   event: ["실시간", "Event"],
   history: ["성능 분석", "Session History"],
@@ -47,7 +49,7 @@ const PAGE_META = {
   retention: ["환경설정", "보관 주기"],
 };
 
-const KEEP_PAGE = ["current", "session", "lock", "event", "history", "sql", "trend", "report", "retention"];
+const KEEP_PAGE = ["current", "session", "lock", "event", "history", "snapshot", "sql", "trend", "report", "retention"];
 const LIVE_PAGES = ["overview", "current", "session", "lock"];
 const SERIES_COLORS = ["#3b6fd8", "#e36b2c", "#2f9e68", "#8d6adf"];
 
@@ -406,7 +408,7 @@ function detail(body) {
 function busyUi() {
   const el = document.activeElement;
   if (el && ["INPUT", "SELECT", "TEXTAREA"].includes(el.tagName)) return true;
-  if (document.querySelector(".gear-drop.open, .nav-item.open")) return true;
+  if (document.querySelector(".gear-drop.open, .nav-item.open, #detail-window")) return true;
   return false;
 }
 
@@ -433,6 +435,7 @@ async function showPage(page, silent = false) {
     else if (page === "lock") await pageLock(serial);
     else if (page === "event") await pageEvent(serial);
     else if (page === "history") await pageHistory(serial);
+    else if (page === "snapshot") await pageSnapshot(serial);
     else if (page === "sql") await pageSql(serial);
     else if (page === "trend") await pageTrend(serial);
     else if (page === "report") await pageReport(serial);
@@ -728,6 +731,75 @@ async function pageSession(serial = state.renderSerial) {
   bindSqlRows();
 }
 
+function sessionBars(points, selected) {
+  const width = 920;
+  const height = 188;
+  if (!points.length) return `<div class="muted small">수집된 Active Session이 없습니다.</div>`;
+  const values = points.map((point) => Number(point.active_sessions) || 0);
+  const max = Math.max(...values, 1);
+  const slot = (width - 36) / points.length;
+  const barW = Math.max(2, slot - 1.5);
+  const bars = points.map((point, index) => {
+    const heightPx = (values[index] / max) * (height - 36);
+    const x = 28 + index * slot;
+    const y = height - 24 - heightPx;
+    const on = point.collect_tm === selected;
+    return `<rect class="collect-bar${on ? " on" : ""}" data-tm="${esc(point.collect_tm)}" x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${barW.toFixed(2)}" height="${Math.max(heightPx, 1).toFixed(2)}" fill="${on ? "#e36b2c" : "#3b6fd8"}"><title>${esc(point.collect_tm)} · Active ${values[index]}</title></rect>`;
+  }).join("");
+  const chosen = points.findIndex((point) => point.collect_tm === selected);
+  const marker = chosen < 0 ? "" : `<line x1="${(28 + chosen * slot + barW / 2).toFixed(2)}" y1="16" x2="${(28 + chosen * slot + barW / 2).toFixed(2)}" y2="${height - 24}" stroke="#e36b2c" stroke-width="1" />`;
+  return `<svg class="collect-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="수집단위별 Active Session">
+    <text x="4" y="14">${num(max)}</text>
+    ${marker}${bars}
+  </svg>`;
+}
+
+async function pageSnapshot(serial = state.renderSerial) {
+  await ensureDashboard();
+  const alias = selectedOrFirst();
+  const series = await api(`/api/sessions/series?alias=${encodeURIComponent(alias)}`);
+  if (!stillCurrent(serial)) return;
+  const points = series.points || [];
+  const known = new Set(points.map((point) => point.collect_tm));
+  if (!state.sessionAt || !known.has(state.sessionAt)) {
+    const older = Math.max(points.length - 31, 0);
+    state.sessionAt = points[older]?.collect_tm || "";
+  }
+  const sessions = state.sessionAt
+    ? await api(`/api/sessions/active?alias=${encodeURIComponent(alias)}&at=${encodeURIComponent(state.sessionAt)}`)
+    : { sessions: [], collect_tm: "" };
+  if (!stillCurrent(serial)) return;
+  const options = [...points].reverse().map((point) => `<option value="${esc(point.collect_tm)}" ${point.collect_tm === state.sessionAt ? "selected" : ""}>${esc(point.collect_tm)} · Active ${num(point.active_sessions)}</option>`).join("");
+  const active = (sessions.sessions || []).filter((row) => row.status === "ACTIVE");
+  const chosen = points.find((point) => point.collect_tm === state.sessionAt);
+  detail(`
+    <div class="panel">
+      <header><strong>수집단위별 Active Session</strong><span class="small muted">막대 하나가 수집 1회입니다. 막대를 선택하면 그 시점의 세션이 아래에 표시됩니다.</span></header>
+      ${sessionBars(points, state.sessionAt)}
+      <div class="chart-scale"><span>${esc(points[0]?.collect_tm || "")}</span><span>${esc(state.sessionAt || "")}</span><span>${esc(points[points.length - 1]?.collect_tm || "")}</span></div>
+    </div>
+    <div class="toolbar" style="margin-top:8px">
+      <label>조회 시점<select id="snap-at">${options}</select></label>
+      <button type="button" class="primary" id="snap-search">조회</button>
+      <span class="small muted">선택 ${esc(sessions.collect_tm || "-")} · 그래프 ${num(chosen?.active_sessions)} · Active ${active.length} / 전체 ${(sessions.sessions || []).length}</span>
+    </div>
+    <div class="panel">
+      <header><strong>${esc(sessions.collect_tm || "-")} Active Session 상세</strong></header>
+      <div class="table-wrap"><table><thead>${SESSION_HEAD}</thead><tbody>${sessionRows(sessions.sessions) || `<tr><td colspan="11" class="muted">이 시점에 세션이 없습니다.</td></tr>`}</tbody></table></div>
+    </div>
+    <div class="panel" style="margin-top:8px"><header><strong>SQL Text</strong></header><div id="sql-preview" class="sql muted" style="padding:8px">행을 선택하면 SQL이 표시됩니다.</div></div>`);
+  bindSqlRows();
+  const search = (value) => {
+    state.sessionAt = value;
+    showPage("snapshot");
+  };
+  document.getElementById("snap-search").onclick = () => search(document.getElementById("snap-at").value);
+  document.getElementById("snap-at").onchange = (event) => search(event.target.value);
+  document.querySelectorAll(".collect-bar").forEach((bar) => {
+    bar.onclick = () => search(bar.dataset.tm);
+  });
+}
+
 function renderLocks(nodes) {
   if (!nodes || !nodes.length) return `<div class="muted small">대기 중인 Lock이 없습니다.</div>`;
   return nodes.map((node) => `
@@ -839,6 +911,138 @@ async function pageHistory(serial = state.renderSerial) {
   });
 }
 
+function closeWindow() {
+  document.getElementById("detail-window")?.remove();
+}
+
+function openWindow(title, body) {
+  closeWindow();
+  const wrap = document.createElement("div");
+  wrap.id = "detail-window";
+  wrap.className = "window-back";
+  wrap.innerHTML = `
+    <div class="window" role="dialog" aria-label="${esc(title)}">
+      <header><strong>${esc(title)}</strong><button type="button" class="ghost" id="window-close">닫기</button></header>
+      <div class="window-body">${body}</div>
+    </div>`;
+  document.body.appendChild(wrap);
+  document.getElementById("window-close").onclick = closeWindow;
+  wrap.addEventListener("click", (event) => {
+    if (event.target === wrap) closeWindow();
+  });
+}
+
+function statGrid(stats) {
+  const items = [
+    ["수행", stats.executions],
+    ["Elapsed ms", stats.elapsed_ms],
+    ["CPU ms", stats.cpu_ms],
+    ["Buffer Gets", stats.buffer_gets],
+    ["Disk Reads", stats.disk_reads],
+    ["Rows", stats.rows_processed],
+  ];
+  return `<div class="kpis">${items.map(([label, value]) => `<div class="kpi"><span>${label}</span><strong>${num(value, 1)}</strong></div>`).join("")}</div>`;
+}
+
+async function openSqlDetail(alias, sqlId) {
+  const data = await api(`/api/sql/detail?alias=${encodeURIComponent(alias)}&sql_id=${encodeURIComponent(sqlId)}`);
+  state._sqlDetail = data;
+  const sql = data.sql || {};
+  openWindow("SQL 상세정보", `
+    <div class="window-tools">
+      <span class="small muted">${esc(sql.sql_id)} · ${esc(sql.command_type || "")} · ${esc(sql.db_user || "")}</span>
+      <button type="button" class="primary" id="open-trace">SQL Trace</button>
+    </div>
+    <p class="small muted">처음 ${esc(sql.first_seen || "-")} · 마지막 ${esc(sql.last_seen || "-")}</p>
+    ${statGrid(data.stats || {})}
+    <div class="panel"><header><strong>SQL Text</strong></header><div class="sql" style="padding:8px">${esc(sql.sql_text || "")}</div></div>`);
+  document.getElementById("open-trace").onclick = () => openSqlTrace(data);
+}
+
+function sqlElapsedPoint(row) {
+  const executions = Number(row.executions) || 0;
+  const elapsed = Number(row.elapsed_ms) || 0;
+  return {
+    sql_id: row.sql_id || "",
+    executions,
+    perCall: executions > 0 ? elapsed / executions : elapsed,
+    sql_text: row.sql_text || "",
+  };
+}
+
+function sqlScatter(rows, selectedId = "") {
+  const items = (rows || []).map(sqlElapsedPoint).filter((item) => item.sql_id);
+  if (!items.length) return `<div class="muted small">표시할 SQL이 없습니다.</div>`;
+  const width = 920;
+  const height = 230;
+  const padL = 56;
+  const padR = 16;
+  const padT = 18;
+  const padB = 32;
+  const maxX = Math.max(...items.map((item) => item.executions), 1);
+  const minX = Math.min(...items.map((item) => item.executions));
+  const maxY = Math.max(...items.map((item) => item.perCall), 1);
+  const spanX = maxX - minX || 1;
+  const plotW = width - padL - padR;
+  const plotH = height - padT - padB;
+  const dots = items.map((item) => {
+    const x = padL + ((item.executions - minX) / spanX) * plotW;
+    const y = padT + (1 - item.perCall / maxY) * plotH;
+    const on = item.sql_id === selectedId;
+    const label = `${item.sql_id} · 회당 ${item.perCall.toFixed(1)} ms · 수행 ${item.executions}`;
+    return `<circle class="sql-dot${on ? " on" : ""}" data-sql-id="${esc(item.sql_id)}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${on ? 8 : 6}" fill="${on ? "#e36b2c" : "#3b6fd8"}"><title>${esc(label)}</title></circle>`;
+  }).join("");
+  return `<svg class="sql-scatter" viewBox="0 0 ${width} ${height}" role="img" aria-label="SQL 수행시간 분포">
+    <text x="4" y="14">${num(maxY, 1)}</text>
+    <text x="4" y="${height - 8}">0</text>
+    <text x="${padL}" y="${height - 8}">${num(minX)}</text>
+    <text x="${width - 90}" y="${height - 8}">수행 ${num(maxX)}</text>
+    <line x1="${padL}" y1="${padT}" x2="${padL}" y2="${height - padB}" stroke="#d5d8de" />
+    <line x1="${padL}" y1="${height - padB}" x2="${width - padR}" y2="${height - padB}" stroke="#d5d8de" />
+    ${dots}
+  </svg>`;
+}
+
+function bindSqlDots(alias) {
+  document.querySelectorAll(".sql-dot").forEach((dot) => {
+    dot.onclick = () => openSqlTraceFor(alias, dot.dataset.sqlId);
+  });
+}
+
+async function openSqlTraceFor(alias, sqlId) {
+  const data = await api(`/api/sql/detail?alias=${encodeURIComponent(alias)}&sql_id=${encodeURIComponent(sqlId)}`);
+  openSqlTrace(data);
+}
+
+function openSqlTrace(data) {
+  const sql = data.sql || {};
+  const rows = (data.trace || []).map((row) => `
+    <tr>
+      <td>${esc(row.agent_collect_tm)}</td><td>${esc(row.sid)}</td><td>${esc(row.db_user || "")}</td>
+      <td>${esc(row.wait_class || "")}</td><td>${esc(row.wait_event || "")}</td>
+      <td>${num(row.elapsed_ms)}</td><td>${esc(row.machine || "")}</td>
+    </tr>`).join("");
+  const catalog = (state._sqlRows || []).filter((row) => row.agent_alias === sql.agent_alias);
+  const points = catalog.length ? catalog : [sql];
+  openWindow("SQL Trace", `
+    <div class="window-tools">
+      <span class="small muted">${esc(sql.sql_id)} · ${esc(sql.command_type || "")}</span>
+      <button type="button" class="ghost" id="back-detail">SQL 상세</button>
+    </div>
+    <div class="panel">
+      <header><strong>수행시간 분포</strong><span class="small muted">점 하나가 SQL 하나입니다. 가로 수행 횟수, 세로 회당 수행시간(ms). 주황 점이 이 SQL입니다.</span></header>
+      ${sqlScatter(points, sql.sql_id)}
+    </div>
+    <div class="sql" style="padding:8px; margin:8px 0">${esc(sql.sql_text || "")}</div>
+    <div class="panel">
+      <header><strong>세션 샘플</strong></header>
+      <div class="table-wrap"><table><thead><tr><th>시점</th><th>SID</th><th>User</th><th>Wait</th><th>Event</th><th>Elapsed</th><th>Host</th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="7" class="muted">이 SQL의 세션 샘플이 없습니다.</td></tr>`}</tbody></table></div>
+    </div>`);
+  document.getElementById("back-detail").onclick = () => openSqlDetail(sql.agent_alias, sql.sql_id);
+  bindSqlDots(sql.agent_alias);
+}
+
 async function pageSql(serial = state.renderSerial) {
   await ensureDashboard();
   const alias = selectedOrFirst();
@@ -856,8 +1060,13 @@ async function pageSql(serial = state.renderSerial) {
     <div class="toolbar">
       <label>검색<input id="sql-q" value="${esc(q)}" placeholder="SQL 일부 또는 SQL ID" /></label>
       <button type="button" class="primary" id="sql-search">검색</button>
+      <span class="small muted">점을 선택하면 그 SQL의 Trace가 열립니다.</span>
     </div>
-    <div class="panel"><div class="table-wrap"><table><thead><tr><th>SQL ID</th><th>유형</th><th>수행</th><th>Elapsed</th><th>Buffer</th><th>Disk</th><th>수집시간</th><th>SQL</th></tr></thead><tbody>${rows || `<tr><td colspan="8" class="muted">SQL이 없습니다.</td></tr>`}</tbody></table></div></div>
+    <div class="panel">
+      <header><strong>SQL 수행시간 분포</strong><span class="small muted">점 하나가 SQL 하나입니다. 가로 수행 횟수, 세로 회당 수행시간(ms).</span></header>
+      ${sqlScatter(data.sql || [])}
+    </div>
+    <div class="panel" style="margin-top:8px"><div class="table-wrap"><table><thead><tr><th>SQL ID</th><th>유형</th><th>수행</th><th>Elapsed</th><th>Buffer</th><th>Disk</th><th>수집시간</th><th>SQL</th></tr></thead><tbody>${rows || `<tr><td colspan="8" class="muted">SQL이 없습니다.</td></tr>`}</tbody></table></div></div>
     <div class="panel" style="margin-top:8px"><header><strong>SQL 전문</strong></header><div id="sql-full" class="sql muted" style="padding:8px">행을 선택하세요.</div></div>`);
   state._sqlRows = data.sql || [];
   document.getElementById("sql-search").onclick = () => {
@@ -876,8 +1085,10 @@ async function pageSql(serial = state.renderSerial) {
       const panel = document.getElementById("sql-full");
       panel.textContent = item?.sql_text || "";
       panel.classList.remove("muted");
+      if (item?.sql_id) openSqlDetail(alias, item.sql_id);
     };
   });
+  bindSqlDots(alias);
 }
 
 function lineChart(series, key, color) {
@@ -1010,16 +1221,7 @@ async function pageSettings(serial = state.renderSerial) {
 
 async function pageRetention(serial = state.renderSerial) {
   await ensureDashboard();
-  const alias = selectedOrFirst();
   const data = await api("/api/retention");
-  if (!stillCurrent(serial)) return;
-  let agent = null;
-  let agentError = "";
-  try {
-    agent = await api(`/api/agent-retention?alias=${encodeURIComponent(alias)}`);
-  } catch (err) {
-    agentError = err.message;
-  }
   if (!stillCurrent(serial)) return;
   const rows = data.policies.map((item) => `
     <tr>
@@ -1031,34 +1233,8 @@ async function pageRetention(serial = state.renderSerial) {
       <td>${esc(item.last_purge_at || "-")}</td>
     </tr>`).join("");
   const log = data.log.map((item) => `<tr><td>${esc(item.ran_at)}</td><td>${esc(item.data_kind)}</td><td>${esc(item.keep_days)}</td><td>${num(item.deleted_rows)}</td></tr>`).join("");
-  const agentRows = (agent?.policies || []).map((item) => `
-    <tr>
-      <td>${esc(item.label)}</td>
-      <td><input data-agent-kind="${esc(item.data_kind)}" data-field="days" type="number" min="0" value="${esc(item.keep_days)}" style="width:90px" /></td>
-      <td><input data-agent-kind="${esc(item.data_kind)}" data-field="enabled" type="checkbox" ${item.enabled ? "checked" : ""} /></td>
-      <td>${num(item.row_count)}</td>
-      <td>${num(item.last_deleted)}</td>
-      <td>${esc(item.last_purge_at || "-")}</td>
-    </tr>`).join("");
-  const agentLog = (agent?.log || []).map((item) => `<tr><td>${esc(item.ran_at)}</td><td>${esc(item.data_kind)}</td><td>${esc(item.keep_days)}</td><td>${num(item.deleted_rows)}</td></tr>`).join("");
-  const agentPanel = agent ? `
-    <div class="panel" style="margin-top:8px; padding:12px">
-      <header><strong>${esc(alias)} 에이전트 저장</strong><span class="small muted">${esc(agent.store_path || "")}</span></header>
-      <p class="small">Active Session, 세션 이력, SQL Text는 이 에이전트에 저장됩니다.</p>
-      <div class="form-grid">
-        <label>저장 주기(초)<input id="agent-save" type="number" min="2" value="${esc(agent.save_interval_sec)}" /></label>
-        <label>삭제 주기(초)<input id="agent-purge" type="number" min="15" value="${esc(agent.purge_interval_sec)}" /></label>
-      </div>
-      <table><thead><tr><th>데이터</th><th>보관일수</th><th>사용</th><th>건수</th><th>마지막 삭제</th><th>실행 시각</th></tr></thead><tbody>${agentRows}</tbody></table>
-      <div style="margin-top:12px">
-        <button type="button" class="primary" id="save-agent-retention">에이전트 주기 저장</button>
-        <button type="button" class="ghost" id="run-agent-retention">에이전트 지금 삭제</button>
-      </div>
-    </div>
-    <div class="panel" style="margin-top:8px"><header><strong>${esc(alias)} 삭제 이력</strong></header>
-      <table><thead><tr><th>시각</th><th>종류</th><th>보관일</th><th>삭제 건수</th></tr></thead><tbody>${agentLog || `<tr><td colspan="4" class="muted">아직 실행 이력이 없습니다.</td></tr>`}</tbody></table>
-    </div>` : `<div class="error">${esc(agentError || "에이전트 저장 정보를 가져오지 못했습니다.")}</div>`;
   detail(`
+    <p class="small">성능, 세션, SQL, 이벤트는 수집서버에 보관되고 여기서 정한 일수가 지나면 삭제됩니다.</p>
     <div class="panel" style="padding:12px">
       <header><strong>수집서버</strong></header>
       <table><thead><tr><th>데이터</th><th>보관일수</th><th>사용</th><th>건수</th><th>마지막 삭제</th><th>실행 시각</th></tr></thead><tbody>${rows}</tbody></table>
@@ -1067,45 +1243,15 @@ async function pageRetention(serial = state.renderSerial) {
         <button type="button" class="ghost" id="run-retention">지금 삭제 실행</button>
       </div>
     </div>
-    <div class="panel" style="margin-top:8px"><header><strong>수집서버 삭제 이력</strong></header>
+    <div class="panel" style="margin-top:8px"><header><strong>삭제 이력</strong></header>
       <table><thead><tr><th>시각</th><th>종류</th><th>보관일</th><th>삭제 건수</th></tr></thead><tbody>${log || `<tr><td colspan="4" class="muted">아직 실행 이력이 없습니다.</td></tr>`}</tbody></table>
-    </div>
-    ${agentPanel}`);
+    </div>`);
   document.getElementById("save-retention").onclick = () => saveRetention(true);
   document.getElementById("run-retention").onclick = async () => {
     await saveRetention(false);
     await api("/api/retention/run", { method: "POST" });
     showPage("retention");
   };
-  const saveAgent = document.getElementById("save-agent-retention");
-  if (saveAgent) saveAgent.onclick = () => saveAgentRetention(alias, true);
-  const runAgent = document.getElementById("run-agent-retention");
-  if (runAgent) {
-    runAgent.onclick = async () => {
-      await saveAgentRetention(alias, false);
-      await api(`/api/agent-retention/run?alias=${encodeURIComponent(alias)}`, { method: "POST" });
-      showPage("retention");
-    };
-  }
-}
-
-async function saveAgentRetention(alias, refresh = true) {
-  const grouped = {};
-  document.querySelectorAll("[data-agent-kind]").forEach((input) => {
-    const kind = input.dataset.agentKind;
-    grouped[kind] = grouped[kind] || { data_kind: kind, keep_days: 0, enabled: false };
-    if (input.dataset.field === "days") grouped[kind].keep_days = Number(input.value);
-    if (input.dataset.field === "enabled") grouped[kind].enabled = input.checked;
-  });
-  await api(`/api/agent-retention?alias=${encodeURIComponent(alias)}`, {
-    method: "PUT",
-    body: JSON.stringify({
-      save_interval_sec: Number(document.getElementById("agent-save").value),
-      purge_interval_sec: Number(document.getElementById("agent-purge").value),
-      policies: Object.values(grouped),
-    }),
-  });
-  if (refresh) showPage("retention");
 }
 
 async function saveRetention(refresh = true) {

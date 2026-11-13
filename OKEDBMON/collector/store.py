@@ -28,6 +28,34 @@ RETENTION_KINDS = {
         "property": "retention.performance.days",
         "default_days": 14,
     },
+    "active_session": {
+        "label": "Active Session",
+        "table": "active_session",
+        "time_column": "agent_collect_tm",
+        "property": "retention.active_session.days",
+        "default_days": 2,
+    },
+    "session_history": {
+        "label": "Session History",
+        "table": "session_history",
+        "time_column": "agent_collect_tm",
+        "property": "retention.session_history.days",
+        "default_days": 7,
+    },
+    "sql_stat": {
+        "label": "SQL 수행 통계",
+        "table": "sql_stat",
+        "time_column": "agent_collect_tm",
+        "property": "retention.sql_stat.days",
+        "default_days": 14,
+    },
+    "sql_text": {
+        "label": "SQL Text",
+        "table": "sql_text",
+        "time_column": "last_seen",
+        "property": "retention.sql_text.days",
+        "default_days": 30,
+    },
     "event": {
         "label": "이벤트",
         "table": "event_log",
@@ -399,20 +427,6 @@ class Store:
                 "UPDATE env_setting SET setting_value=?, updated_at=? WHERE setting_key='db.repository.path'",
                 (self.properties.get("db.repository.path", DEFAULT_REPOSITORY), stamp),
             )
-        moved = ("active_session", "session_history", "sql_stat", "sql_text")
-        self.conn.execute(
-            f"DELETE FROM retention_policy WHERE data_kind IN ({','.join('?' for _ in moved)})",
-            moved,
-        )
-        for table in moved:
-            self.conn.execute(f"DELETE FROM {table}")
-        for key in (
-            "retention.active_session.days",
-            "retention.session_history.days",
-            "retention.sql_stat.days",
-            "retention.sql_text.days",
-        ):
-            self.conn.execute("DELETE FROM env_setting WHERE setting_key=?", (key,))
         if self.setting("agent.token", "") in LEGACY_AGENT_TOKENS:
             self.conn.execute(
                 "UPDATE env_setting SET setting_value=?, updated_at=? WHERE setting_key='agent.token'",
@@ -574,6 +588,10 @@ class Store:
         collect_tm = payload["collect_tm"]
         product = payload.get("product") or ""
         perf = payload.get("performance") or {}
+        sessions = payload.get("active_sessions") or []
+        history = payload.get("session_history") or []
+        sql_texts = payload.get("sql_texts") or []
+        sql_stats = payload.get("sql_stats") or []
         status = payload.get("status") or "ONLINE"
         message = payload.get("message") or ""
         agent_url = (payload.get("agent_url") or "").strip() or None
@@ -635,6 +653,64 @@ class Store:
                     ),
                 )
                 self._raise_threshold_events(alias, collect_tm, perf)
+            self.conn.execute(
+                "DELETE FROM active_session WHERE agent_alias=? AND agent_collect_tm=?",
+                (alias, collect_tm),
+            )
+            for row in sessions:
+                self._insert_session("active_session", alias, collect_tm, row, with_source=False)
+            for row in history:
+                self._insert_session("session_history", alias, collect_tm, row, with_source=True)
+            for row in sql_texts:
+                sql_id = row.get("sql_id")
+                text = row.get("sql_text") or ""
+                if not sql_id or not text:
+                    continue
+                self.conn.execute(
+                    """
+                    INSERT INTO sql_text (
+                        agent_alias, sql_id, sql_text, command_type, db_user, first_seen, last_seen
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(agent_alias, sql_id) DO UPDATE SET
+                        sql_text=excluded.sql_text,
+                        command_type=excluded.command_type,
+                        db_user=excluded.db_user,
+                        last_seen=excluded.last_seen
+                    """,
+                    (
+                        alias,
+                        sql_id,
+                        text,
+                        row.get("command_type") or "",
+                        row.get("db_user") or "",
+                        collect_tm,
+                        collect_tm,
+                    ),
+                )
+            for row in sql_stats:
+                if not row.get("sql_id"):
+                    continue
+                self.conn.execute(
+                    """
+                    INSERT INTO sql_stat (
+                        agent_alias, agent_collect_tm, sql_id, executions, elapsed_ms, cpu_ms,
+                        buffer_gets, disk_reads, rows_processed, db_user, program
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        alias,
+                        collect_tm,
+                        row["sql_id"],
+                        _int(row.get("executions")),
+                        _num(row.get("elapsed_ms")),
+                        _num(row.get("cpu_ms")),
+                        _int(row.get("buffer_gets")),
+                        _int(row.get("disk_reads")),
+                        _int(row.get("rows_processed")),
+                        row.get("db_user") or "",
+                        row.get("program") or "",
+                    ),
+                )
             self.conn.commit()
         return {"accepted": True, "agent_alias": alias, "collect_tm": collect_tm}
 
@@ -781,12 +857,15 @@ class Store:
         ).fetchall()
         return [_perf_dict(row) for row in rows]
 
-    def current_sessions(self, alias: str) -> list[dict]:
-        latest = self.conn.execute(
-            "SELECT MAX(agent_collect_tm) AS tm FROM active_session WHERE agent_alias=?",
-            (alias,),
-        ).fetchone()
-        if latest is None or latest["tm"] is None:
+    def current_sessions(self, alias: str, at: str | None = None) -> list[dict]:
+        moment = (at or "").strip()
+        if not moment:
+            latest = self.conn.execute(
+                "SELECT MAX(agent_collect_tm) AS tm FROM active_session WHERE agent_alias=?",
+                (alias,),
+            ).fetchone()
+            moment = "" if latest is None or latest["tm"] is None else latest["tm"]
+        if not moment:
             return []
         rows = self.conn.execute(
             """
@@ -794,9 +873,76 @@ class Store:
             WHERE agent_alias=? AND agent_collect_tm=?
             ORDER BY CASE status WHEN 'ACTIVE' THEN 0 ELSE 1 END, elapsed_ms DESC
             """,
-            (alias, latest["tm"]),
+            (alias, moment),
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def session_times(self, alias: str, limit: int = 120) -> list[str]:
+        return [row["collect_tm"] for row in reversed(self.session_series(alias, limit))]
+
+    def session_series(self, alias: str, limit: int = 120) -> list[dict]:
+        rows = self.conn.execute(
+            """
+            SELECT agent_collect_tm AS collect_tm,
+                   SUM(CASE WHEN status='ACTIVE' THEN 1 ELSE 0 END) AS active_sessions,
+                   COUNT(*) AS connected_sessions
+            FROM active_session
+            WHERE agent_alias=?
+            GROUP BY agent_collect_tm
+            ORDER BY agent_collect_tm DESC
+            LIMIT ?
+            """,
+            (alias, limit),
+        ).fetchall()
+        return [dict(row) for row in reversed(rows)]
+
+    def sql_detail(self, alias: str, sql_id: str) -> dict | None:
+        text = self.conn.execute(
+            "SELECT * FROM sql_text WHERE agent_alias=? AND sql_id=?",
+            (alias, sql_id),
+        ).fetchone()
+        if text is None:
+            return None
+        totals = self.conn.execute(
+            """
+            SELECT COALESCE(SUM(executions), 0) AS executions,
+                   COALESCE(SUM(elapsed_ms), 0) AS elapsed_ms,
+                   COALESCE(SUM(cpu_ms), 0) AS cpu_ms,
+                   COALESCE(SUM(buffer_gets), 0) AS buffer_gets,
+                   COALESCE(SUM(disk_reads), 0) AS disk_reads,
+                   COALESCE(SUM(rows_processed), 0) AS rows_processed
+            FROM sql_stat
+            WHERE agent_alias=? AND sql_id=?
+            """,
+            (alias, sql_id),
+        ).fetchone()
+        series = self.conn.execute(
+            """
+            SELECT agent_collect_tm, executions, elapsed_ms, cpu_ms, buffer_gets, disk_reads, rows_processed
+            FROM sql_stat
+            WHERE agent_alias=? AND sql_id=?
+            ORDER BY agent_collect_tm DESC
+            LIMIT 40
+            """,
+            (alias, sql_id),
+        ).fetchall()
+        trace = self.conn.execute(
+            """
+            SELECT agent_collect_tm, sid, serial_number, db_user, program, machine, status,
+                   wait_class, wait_event, elapsed_ms, blocking_sid
+            FROM session_history
+            WHERE agent_alias=? AND sql_id=?
+            ORDER BY agent_collect_tm DESC, elapsed_ms DESC
+            LIMIT 40
+            """,
+            (alias, sql_id),
+        ).fetchall()
+        return {
+            "sql": dict(text),
+            "stats": dict(totals),
+            "series": [dict(row) for row in reversed(series)],
+            "trace": [dict(row) for row in trace],
+        }
 
     def session_history(
         self, alias: str, start: str, end: str, sql_id: str = "", limit: int = 200
@@ -1048,7 +1194,7 @@ class Store:
                 "tps_avg": avg("tps"),
                 "qps_avg": avg("qps"),
             },
-            "top_sql": [],
+            "top_sql": self.sql_catalog(alias, limit=10),
             "events": self.events(alias, limit=15),
         }
 
