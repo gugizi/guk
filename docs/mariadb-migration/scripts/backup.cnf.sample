@@ -1,0 +1,7 @@
+# mariabackup 은 [client] 가 아니라 [mariabackup] 그룹을 읽는다.
+# S1 에서 로컬로 실행하는 계정이다.
+
+[mariabackup]
+user=backup
+password=change-me
+host=localhost
