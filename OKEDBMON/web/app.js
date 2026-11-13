@@ -959,6 +959,61 @@ async function openSqlDetail(alias, sqlId) {
   document.getElementById("open-trace").onclick = () => openSqlTrace(data);
 }
 
+function sqlElapsedPoint(row) {
+  const executions = Number(row.executions) || 0;
+  const elapsed = Number(row.elapsed_ms) || 0;
+  return {
+    sql_id: row.sql_id || "",
+    executions,
+    perCall: executions > 0 ? elapsed / executions : elapsed,
+    sql_text: row.sql_text || "",
+  };
+}
+
+function sqlScatter(rows, selectedId = "") {
+  const items = (rows || []).map(sqlElapsedPoint).filter((item) => item.sql_id);
+  if (!items.length) return `<div class="muted small">표시할 SQL이 없습니다.</div>`;
+  const width = 920;
+  const height = 230;
+  const padL = 56;
+  const padR = 16;
+  const padT = 18;
+  const padB = 32;
+  const maxX = Math.max(...items.map((item) => item.executions), 1);
+  const minX = Math.min(...items.map((item) => item.executions));
+  const maxY = Math.max(...items.map((item) => item.perCall), 1);
+  const spanX = maxX - minX || 1;
+  const plotW = width - padL - padR;
+  const plotH = height - padT - padB;
+  const dots = items.map((item) => {
+    const x = padL + ((item.executions - minX) / spanX) * plotW;
+    const y = padT + (1 - item.perCall / maxY) * plotH;
+    const on = item.sql_id === selectedId;
+    const label = `${item.sql_id} · 회당 ${item.perCall.toFixed(1)} ms · 수행 ${item.executions}`;
+    return `<circle class="sql-dot${on ? " on" : ""}" data-sql-id="${esc(item.sql_id)}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="${on ? 8 : 6}" fill="${on ? "#e36b2c" : "#3b6fd8"}"><title>${esc(label)}</title></circle>`;
+  }).join("");
+  return `<svg class="sql-scatter" viewBox="0 0 ${width} ${height}" role="img" aria-label="SQL 수행시간 분포">
+    <text x="4" y="14">${num(maxY, 1)}</text>
+    <text x="4" y="${height - 8}">0</text>
+    <text x="${padL}" y="${height - 8}">${num(minX)}</text>
+    <text x="${width - 90}" y="${height - 8}">수행 ${num(maxX)}</text>
+    <line x1="${padL}" y1="${padT}" x2="${padL}" y2="${height - padB}" stroke="#d5d8de" />
+    <line x1="${padL}" y1="${height - padB}" x2="${width - padR}" y2="${height - padB}" stroke="#d5d8de" />
+    ${dots}
+  </svg>`;
+}
+
+function bindSqlDots(alias) {
+  document.querySelectorAll(".sql-dot").forEach((dot) => {
+    dot.onclick = () => openSqlTraceFor(alias, dot.dataset.sqlId);
+  });
+}
+
+async function openSqlTraceFor(alias, sqlId) {
+  const data = await api(`/api/sql/detail?alias=${encodeURIComponent(alias)}&sql_id=${encodeURIComponent(sqlId)}`);
+  openSqlTrace(data);
+}
+
 function openSqlTrace(data) {
   const sql = data.sql || {};
   const rows = (data.trace || []).map((row) => `
@@ -967,19 +1022,25 @@ function openSqlTrace(data) {
       <td>${esc(row.wait_class || "")}</td><td>${esc(row.wait_event || "")}</td>
       <td>${num(row.elapsed_ms)}</td><td>${esc(row.machine || "")}</td>
     </tr>`).join("");
+  const catalog = (state._sqlRows || []).filter((row) => row.agent_alias === sql.agent_alias);
+  const points = catalog.length ? catalog : [sql];
   openWindow("SQL Trace", `
     <div class="window-tools">
       <span class="small muted">${esc(sql.sql_id)} · ${esc(sql.command_type || "")}</span>
       <button type="button" class="ghost" id="back-detail">SQL 상세</button>
     </div>
-    <div class="sql" style="padding:8px; margin-bottom:8px">${esc(sql.sql_text || "")}</div>
+    <div class="panel">
+      <header><strong>수행시간 분포</strong><span class="small muted">점 하나가 SQL 하나입니다. 가로 수행 횟수, 세로 회당 수행시간(ms). 주황 점이 이 SQL입니다.</span></header>
+      ${sqlScatter(points, sql.sql_id)}
+    </div>
+    <div class="sql" style="padding:8px; margin:8px 0">${esc(sql.sql_text || "")}</div>
     <div class="panel">
       <header><strong>세션 샘플</strong></header>
       <div class="table-wrap"><table><thead><tr><th>시점</th><th>SID</th><th>User</th><th>Wait</th><th>Event</th><th>Elapsed</th><th>Host</th></tr></thead>
         <tbody>${rows || `<tr><td colspan="7" class="muted">이 SQL의 세션 샘플이 없습니다.</td></tr>`}</tbody></table></div>
-    </div>
-    <div class="panel" style="margin-top:8px"><header><strong>Elapsed 추이</strong></header>${lineChart(data.series || [], "elapsed_ms", "#e36b2c")}</div>`);
+    </div>`);
   document.getElementById("back-detail").onclick = () => openSqlDetail(sql.agent_alias, sql.sql_id);
+  bindSqlDots(sql.agent_alias);
 }
 
 async function pageSql(serial = state.renderSerial) {
@@ -999,9 +1060,13 @@ async function pageSql(serial = state.renderSerial) {
     <div class="toolbar">
       <label>검색<input id="sql-q" value="${esc(q)}" placeholder="SQL 일부 또는 SQL ID" /></label>
       <button type="button" class="primary" id="sql-search">검색</button>
-      <span class="small muted">행을 선택하면 SQL 상세정보 창이 열립니다.</span>
+      <span class="small muted">점을 선택하면 그 SQL의 Trace가 열립니다.</span>
     </div>
-    <div class="panel"><div class="table-wrap"><table><thead><tr><th>SQL ID</th><th>유형</th><th>수행</th><th>Elapsed</th><th>Buffer</th><th>Disk</th><th>수집시간</th><th>SQL</th></tr></thead><tbody>${rows || `<tr><td colspan="8" class="muted">SQL이 없습니다.</td></tr>`}</tbody></table></div></div>
+    <div class="panel">
+      <header><strong>SQL 수행시간 분포</strong><span class="small muted">점 하나가 SQL 하나입니다. 가로 수행 횟수, 세로 회당 수행시간(ms).</span></header>
+      ${sqlScatter(data.sql || [])}
+    </div>
+    <div class="panel" style="margin-top:8px"><div class="table-wrap"><table><thead><tr><th>SQL ID</th><th>유형</th><th>수행</th><th>Elapsed</th><th>Buffer</th><th>Disk</th><th>수집시간</th><th>SQL</th></tr></thead><tbody>${rows || `<tr><td colspan="8" class="muted">SQL이 없습니다.</td></tr>`}</tbody></table></div></div>
     <div class="panel" style="margin-top:8px"><header><strong>SQL 전문</strong></header><div id="sql-full" class="sql muted" style="padding:8px">행을 선택하세요.</div></div>`);
   state._sqlRows = data.sql || [];
   document.getElementById("sql-search").onclick = () => {
@@ -1023,6 +1088,7 @@ async function pageSql(serial = state.renderSerial) {
       if (item?.sql_id) openSqlDetail(alias, item.sql_id);
     };
   });
+  bindSqlDots(alias);
 }
 
 function lineChart(series, key, color) {

@@ -23,6 +23,7 @@ Python 3.10 이상이 필요합니다. 프로그램은 모두 이 `OKEDBMON` 폴
 - 상단: 실시간(Current, Active Session, Lock, Event), 성능 분석(Session History, 시점별 Active Session, SQL, 추이, 점검 요약), 환경설정(Config, 보관 주기)
 - SQL 행을 선택하면 SQL 상세정보 창이 열리고, 그 창에서 SQL Trace로 시점별 세션 샘플을 봅니다.
 - 시점별 Active Session은 수집 1회마다 막대 하나로 Active Session 수를 그리고, 막대를 선택하면 그 시각의 세션 상세가 표시됩니다.
+- SQL 화면과 SQL Trace는 SQL 하나당 점 하나로 수행시간 분포를 그립니다. 가로는 수행 횟수, 세로는 회당 수행시간입니다.
 - 왼쪽: 모니터링 대상 목록. DBMS별로 묶고 검색으로 거를 수 있습니다.
 - 가운데: 선택한 대상과 메뉴에 해당하는 조회 결과
 
