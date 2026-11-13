@@ -193,7 +193,9 @@ def create_app(store: Store | None = None) -> FastAPI:
         data = response.json() if response.content else {}
         if response.status_code >= 400:
             detail = data.get("detail") if isinstance(data, dict) else ""
-            raise HTTPException(status_code=response.status_code, detail=detail or "에이전트 조회에 실패했습니다.")
+            # An agent 401 is an agent token problem. Forwarding 401 would log the viewer out.
+            status = 503 if response.status_code in (401, 403) else response.status_code
+            raise HTTPException(status_code=status, detail=detail or "에이전트 조회에 실패했습니다.")
         return data
 
     @app.get("/api/sessions/active")

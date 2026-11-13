@@ -350,3 +350,35 @@ def test_demo_targets_collect_in_parallel():
     elapsed = time.perf_counter() - started
     assert [row["agent_alias"] for row in rows] == ["SLOW", "FAST", "FAST2"]
     assert elapsed < 0.55
+
+
+def test_login_token_stays_visible_while_ingest_runs(tmp_path):
+    import threading
+
+    store, client = build(tmp_path)
+    token = login(client)
+    stop = threading.Event()
+    errors = []
+
+    def writer():
+        while not stop.is_set():
+            store.ingest(sample_payload())
+
+    def reader():
+        for _ in range(40):
+            if store.user_for_token(token) is None:
+                errors.append("missing")
+            response = client.get("/api/dashboard", headers=auth(token))
+            if response.status_code != 200:
+                errors.append(str(response.status_code))
+
+    threads = [threading.Thread(target=writer)]
+    threads.extend(threading.Thread(target=reader) for _ in range(3))
+    for thread in threads:
+        thread.start()
+    for thread in threads[1:]:
+        thread.join()
+    stop.set()
+    threads[0].join()
+    store.close()
+    assert errors == []

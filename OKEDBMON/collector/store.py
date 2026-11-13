@@ -296,11 +296,7 @@ class Store:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
-        self.conn = sqlite3.connect(self.path, check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA journal_mode=WAL")
-        self.conn.execute("PRAGMA busy_timeout=5000")
-        self.conn.execute("PRAGMA foreign_keys=ON")
+        self._local = threading.local()
         self.conn.executescript(SCHEMA)
         columns = [row[1] for row in self.conn.execute("PRAGMA table_info(agent_heartbeat)")]
         if "agent_url" not in columns:
@@ -309,8 +305,29 @@ class Store:
         if seed:
             self._seed()
 
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.path, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA foreign_keys=ON")
+        return conn
+
+    @property
+    def conn(self) -> sqlite3.Connection:
+        # uvicorn runs each request on a worker thread. One shared connection
+        # drops committed rows, including a login token issued a moment earlier.
+        conn = getattr(self._local, "conn", None)
+        if conn is None:
+            conn = self._connect()
+            self._local.conn = conn
+        return conn
+
     def close(self) -> None:
-        self.conn.close()
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            conn.close()
+            self._local.conn = None
 
     def _seed(self) -> None:
         with self._lock:
@@ -464,15 +481,17 @@ class Store:
         return token
 
     def user_for_token(self, token: str) -> dict | None:
-        row = self.conn.execute(
-            """
-            SELECT u.user_id, u.display_name, u.role, t.expires_at
-            FROM auth_token t
-            JOIN app_user u ON u.user_id = t.user_id
-            WHERE t.token=?
-            """,
-            (token,),
-        ).fetchone()
+        with self._lock:
+            self.conn.commit()
+            row = self.conn.execute(
+                """
+                SELECT u.user_id, u.display_name, u.role, t.expires_at
+                FROM auth_token t
+                JOIN app_user u ON u.user_id = t.user_id
+                WHERE t.token=?
+                """,
+                (token,),
+            ).fetchone()
         if row is None or row["expires_at"] < now_text():
             return None
         return {"user_id": row["user_id"], "display_name": row["display_name"], "role": row["role"]}
