@@ -189,6 +189,9 @@ def test_point_in_time_session_and_sql_detail(tmp_path):
     ).json()
     assert past["collect_tm"] == now_text(older)
     assert any(row["sql_id"] == "old" for row in past["sessions"])
+    series = client.get("/api/sessions/series", params={"alias": "ORA_PROD"}, headers=auth(token)).json()["points"]
+    assert [row["collect_tm"] for row in series] == [now_text(older), now_text(fresh)]
+    assert series[0]["active_sessions"] == 2
     detail = client.get(
         "/api/sql/detail",
         params={"alias": "ORA_PROD", "sql_id": "old"},

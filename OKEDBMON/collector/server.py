@@ -171,6 +171,10 @@ def create_app(store: Store | None = None) -> FastAPI:
     def session_times(alias: str, user: dict = Depends(current_user)):
         return {"times": store.session_times(alias)}
 
+    @app.get("/api/sessions/series")
+    def session_series(alias: str, user: dict = Depends(current_user)):
+        return {"points": store.session_series(alias)}
+
     @app.get("/api/sessions/active")
     def active_sessions(alias: str, at: str = "", user: dict = Depends(current_user)):
         rows = store.current_sessions(alias, at)

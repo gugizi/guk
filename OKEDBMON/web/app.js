@@ -731,40 +731,73 @@ async function pageSession(serial = state.renderSerial) {
   bindSqlRows();
 }
 
+function sessionBars(points, selected) {
+  const width = 920;
+  const height = 188;
+  if (!points.length) return `<div class="muted small">수집된 Active Session이 없습니다.</div>`;
+  const values = points.map((point) => Number(point.active_sessions) || 0);
+  const max = Math.max(...values, 1);
+  const slot = (width - 36) / points.length;
+  const barW = Math.max(2, slot - 1.5);
+  const bars = points.map((point, index) => {
+    const heightPx = (values[index] / max) * (height - 36);
+    const x = 28 + index * slot;
+    const y = height - 24 - heightPx;
+    const on = point.collect_tm === selected;
+    return `<rect class="collect-bar${on ? " on" : ""}" data-tm="${esc(point.collect_tm)}" x="${x.toFixed(2)}" y="${y.toFixed(2)}" width="${barW.toFixed(2)}" height="${Math.max(heightPx, 1).toFixed(2)}" fill="${on ? "#e36b2c" : "#3b6fd8"}"><title>${esc(point.collect_tm)} · Active ${values[index]}</title></rect>`;
+  }).join("");
+  const chosen = points.findIndex((point) => point.collect_tm === selected);
+  const marker = chosen < 0 ? "" : `<line x1="${(28 + chosen * slot + barW / 2).toFixed(2)}" y1="16" x2="${(28 + chosen * slot + barW / 2).toFixed(2)}" y2="${height - 24}" stroke="#e36b2c" stroke-width="1" />`;
+  return `<svg class="collect-chart" viewBox="0 0 ${width} ${height}" role="img" aria-label="수집단위별 Active Session">
+    <text x="4" y="14">${num(max)}</text>
+    ${marker}${bars}
+  </svg>`;
+}
+
 async function pageSnapshot(serial = state.renderSerial) {
   await ensureDashboard();
   const alias = selectedOrFirst();
-  const times = await api(`/api/sessions/times?alias=${encodeURIComponent(alias)}`);
+  const series = await api(`/api/sessions/series?alias=${encodeURIComponent(alias)}`);
   if (!stillCurrent(serial)) return;
-  const list = times.times || [];
-  if (!state.sessionAt || !list.includes(state.sessionAt)) {
-    const older = Math.min(30, Math.max(list.length - 1, 0));
-    state.sessionAt = list[older] || "";
+  const points = series.points || [];
+  const known = new Set(points.map((point) => point.collect_tm));
+  if (!state.sessionAt || !known.has(state.sessionAt)) {
+    const older = Math.max(points.length - 31, 0);
+    state.sessionAt = points[older]?.collect_tm || "";
   }
   const sessions = state.sessionAt
     ? await api(`/api/sessions/active?alias=${encodeURIComponent(alias)}&at=${encodeURIComponent(state.sessionAt)}`)
     : { sessions: [], collect_tm: "" };
   if (!stillCurrent(serial)) return;
-  const options = list.map((tm) => `<option value="${esc(tm)}" ${tm === state.sessionAt ? "selected" : ""}>${esc(tm)}</option>`).join("");
+  const options = [...points].reverse().map((point) => `<option value="${esc(point.collect_tm)}" ${point.collect_tm === state.sessionAt ? "selected" : ""}>${esc(point.collect_tm)} · Active ${num(point.active_sessions)}</option>`).join("");
   const active = (sessions.sessions || []).filter((row) => row.status === "ACTIVE");
+  const chosen = points.find((point) => point.collect_tm === state.sessionAt);
   detail(`
-    <div class="toolbar">
+    <div class="panel">
+      <header><strong>수집단위별 Active Session</strong><span class="small muted">막대 하나가 수집 1회입니다. 막대를 선택하면 그 시점의 세션이 아래에 표시됩니다.</span></header>
+      ${sessionBars(points, state.sessionAt)}
+      <div class="chart-scale"><span>${esc(points[0]?.collect_tm || "")}</span><span>${esc(state.sessionAt || "")}</span><span>${esc(points[points.length - 1]?.collect_tm || "")}</span></div>
+    </div>
+    <div class="toolbar" style="margin-top:8px">
       <label>조회 시점<select id="snap-at">${options}</select></label>
       <button type="button" class="primary" id="snap-search">조회</button>
-      <span class="small muted">수집 ${esc(sessions.collect_tm || "-")} · Active ${active.length} / 전체 ${(sessions.sessions || []).length}</span>
+      <span class="small muted">선택 ${esc(sessions.collect_tm || "-")} · 그래프 ${num(chosen?.active_sessions)} · Active ${active.length} / 전체 ${(sessions.sessions || []).length}</span>
     </div>
     <div class="panel">
-      <header><strong>시점별 Active Session</strong></header>
+      <header><strong>${esc(sessions.collect_tm || "-")} Active Session 상세</strong></header>
       <div class="table-wrap"><table><thead>${SESSION_HEAD}</thead><tbody>${sessionRows(sessions.sessions) || `<tr><td colspan="11" class="muted">이 시점에 세션이 없습니다.</td></tr>`}</tbody></table></div>
     </div>
     <div class="panel" style="margin-top:8px"><header><strong>SQL Text</strong></header><div id="sql-preview" class="sql muted" style="padding:8px">행을 선택하면 SQL이 표시됩니다.</div></div>`);
   bindSqlRows();
-  const search = () => {
-    state.sessionAt = document.getElementById("snap-at").value;
+  const search = (value) => {
+    state.sessionAt = value;
     showPage("snapshot");
   };
-  document.getElementById("snap-search").onclick = search;
-  document.getElementById("snap-at").onchange = search;
+  document.getElementById("snap-search").onclick = () => search(document.getElementById("snap-at").value);
+  document.getElementById("snap-at").onchange = (event) => search(event.target.value);
+  document.querySelectorAll(".collect-bar").forEach((bar) => {
+    bar.onclick = () => search(bar.dataset.tm);
+  });
 }
 
 function renderLocks(nodes) {

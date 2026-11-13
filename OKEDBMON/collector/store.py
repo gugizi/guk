@@ -878,9 +878,15 @@ class Store:
         return [dict(row) for row in rows]
 
     def session_times(self, alias: str, limit: int = 120) -> list[str]:
+        return [row["collect_tm"] for row in reversed(self.session_series(alias, limit))]
+
+    def session_series(self, alias: str, limit: int = 120) -> list[dict]:
         rows = self.conn.execute(
             """
-            SELECT agent_collect_tm FROM active_session
+            SELECT agent_collect_tm AS collect_tm,
+                   SUM(CASE WHEN status='ACTIVE' THEN 1 ELSE 0 END) AS active_sessions,
+                   COUNT(*) AS connected_sessions
+            FROM active_session
             WHERE agent_alias=?
             GROUP BY agent_collect_tm
             ORDER BY agent_collect_tm DESC
@@ -888,7 +894,7 @@ class Store:
             """,
             (alias, limit),
         ).fetchall()
-        return [row["agent_collect_tm"] for row in rows]
+        return [dict(row) for row in reversed(rows)]
 
     def sql_detail(self, alias: str, sql_id: str) -> dict | None:
         text = self.conn.execute(
