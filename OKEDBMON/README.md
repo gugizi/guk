@@ -20,7 +20,8 @@ Python 3.10 이상이 필요합니다. 프로그램은 모두 이 `OKEDBMON` 폴
 ## 화면 구성
 
 - 첫 화면은 인스턴스별 CPU, 세션, Lock, 이벤트, Slow SQL입니다.
-- 상단: 실시간(Current, Session, Lock, Event), 성능 분석(Session History, SQL, 추이, 점검 요약), 환경설정(Config, 보관 주기)
+- 상단: 실시간(Current, Active Session, Lock, Event), 성능 분석(Session History, 시점별 Active Session, SQL, 추이, 점검 요약), 환경설정(Config, 보관 주기)
+- SQL 행을 선택하면 SQL 상세정보 창이 열리고, 그 창에서 SQL Trace로 시점별 세션 샘플을 봅니다.
 - 왼쪽: 모니터링 대상 목록. DBMS별로 묶고 검색으로 거를 수 있습니다.
 - 가운데: 선택한 대상과 메뉴에 해당하는 조회 결과
 

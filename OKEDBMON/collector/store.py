@@ -857,12 +857,15 @@ class Store:
         ).fetchall()
         return [_perf_dict(row) for row in rows]
 
-    def current_sessions(self, alias: str) -> list[dict]:
-        latest = self.conn.execute(
-            "SELECT MAX(agent_collect_tm) AS tm FROM active_session WHERE agent_alias=?",
-            (alias,),
-        ).fetchone()
-        if latest is None or latest["tm"] is None:
+    def current_sessions(self, alias: str, at: str | None = None) -> list[dict]:
+        moment = (at or "").strip()
+        if not moment:
+            latest = self.conn.execute(
+                "SELECT MAX(agent_collect_tm) AS tm FROM active_session WHERE agent_alias=?",
+                (alias,),
+            ).fetchone()
+            moment = "" if latest is None or latest["tm"] is None else latest["tm"]
+        if not moment:
             return []
         rows = self.conn.execute(
             """
@@ -870,9 +873,70 @@ class Store:
             WHERE agent_alias=? AND agent_collect_tm=?
             ORDER BY CASE status WHEN 'ACTIVE' THEN 0 ELSE 1 END, elapsed_ms DESC
             """,
-            (alias, latest["tm"]),
+            (alias, moment),
         ).fetchall()
         return [dict(row) for row in rows]
+
+    def session_times(self, alias: str, limit: int = 120) -> list[str]:
+        rows = self.conn.execute(
+            """
+            SELECT agent_collect_tm FROM active_session
+            WHERE agent_alias=?
+            GROUP BY agent_collect_tm
+            ORDER BY agent_collect_tm DESC
+            LIMIT ?
+            """,
+            (alias, limit),
+        ).fetchall()
+        return [row["agent_collect_tm"] for row in rows]
+
+    def sql_detail(self, alias: str, sql_id: str) -> dict | None:
+        text = self.conn.execute(
+            "SELECT * FROM sql_text WHERE agent_alias=? AND sql_id=?",
+            (alias, sql_id),
+        ).fetchone()
+        if text is None:
+            return None
+        totals = self.conn.execute(
+            """
+            SELECT COALESCE(SUM(executions), 0) AS executions,
+                   COALESCE(SUM(elapsed_ms), 0) AS elapsed_ms,
+                   COALESCE(SUM(cpu_ms), 0) AS cpu_ms,
+                   COALESCE(SUM(buffer_gets), 0) AS buffer_gets,
+                   COALESCE(SUM(disk_reads), 0) AS disk_reads,
+                   COALESCE(SUM(rows_processed), 0) AS rows_processed
+            FROM sql_stat
+            WHERE agent_alias=? AND sql_id=?
+            """,
+            (alias, sql_id),
+        ).fetchone()
+        series = self.conn.execute(
+            """
+            SELECT agent_collect_tm, executions, elapsed_ms, cpu_ms, buffer_gets, disk_reads, rows_processed
+            FROM sql_stat
+            WHERE agent_alias=? AND sql_id=?
+            ORDER BY agent_collect_tm DESC
+            LIMIT 40
+            """,
+            (alias, sql_id),
+        ).fetchall()
+        trace = self.conn.execute(
+            """
+            SELECT agent_collect_tm, sid, serial_number, db_user, program, machine, status,
+                   wait_class, wait_event, elapsed_ms, blocking_sid
+            FROM session_history
+            WHERE agent_alias=? AND sql_id=?
+            ORDER BY agent_collect_tm DESC, elapsed_ms DESC
+            LIMIT 40
+            """,
+            (alias, sql_id),
+        ).fetchall()
+        return {
+            "sql": dict(text),
+            "stats": dict(totals),
+            "series": [dict(row) for row in reversed(series)],
+            "trace": [dict(row) for row in trace],
+        }
 
     def session_history(
         self, alias: str, start: str, end: str, sql_id: str = "", limit: int = 200

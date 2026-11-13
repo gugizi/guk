@@ -165,6 +165,43 @@ def test_collector_keeps_sessions_after_ingest(tmp_path):
     store.close()
 
 
+def test_point_in_time_session_and_sql_detail(tmp_path):
+    store, client = build(tmp_path)
+    token = login(client)
+    older = datetime.now() - timedelta(minutes=30)
+    fresh = datetime.now()
+    old_body = sample_payload(moment=older, sql="SELECT old_row FROM dual", sql_key="old")
+    old_body["session_history"][0]["sql_id"] = "old"
+    old_body["session_history"][0]["wait_class"] = "User I/O"
+    client.post("/api/ingest", json=old_body, headers={"X-Agent-Token": "okedbmon-agent"})
+    client.post(
+        "/api/ingest",
+        json=sample_payload(moment=fresh, sql="SELECT fresh_row FROM dual", sql_key="new"),
+        headers={"X-Agent-Token": "okedbmon-agent"},
+    )
+    times = client.get("/api/sessions/times", params={"alias": "ORA_PROD"}, headers=auth(token)).json()["times"]
+    assert times[0] == now_text(fresh)
+    assert now_text(older) in times
+    past = client.get(
+        "/api/sessions/active",
+        params={"alias": "ORA_PROD", "at": now_text(older)},
+        headers=auth(token),
+    ).json()
+    assert past["collect_tm"] == now_text(older)
+    assert any(row["sql_id"] == "old" for row in past["sessions"])
+    detail = client.get(
+        "/api/sql/detail",
+        params={"alias": "ORA_PROD", "sql_id": "old"},
+        headers=auth(token),
+    ).json()
+    assert detail["sql"]["sql_text"].startswith("SELECT old_row")
+    assert detail["stats"]["executions"] == 4
+    assert detail["trace"][0]["wait_class"] == "User I/O"
+    assert detail["trace"][0]["sid"] == 11
+    assert client.get("/api/sql/detail", params={"alias": "ORA_PROD", "sql_id": "missing"}, headers=auth(token)).status_code == 404
+    store.close()
+
+
 def test_product_identity_and_legacy_names(tmp_path):
     store, client = build(tmp_path)
     health = client.get("/api/health").json()

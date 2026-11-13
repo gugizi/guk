@@ -18,12 +18,13 @@ const state = {
 const MENUS = [
   ["실시간", [
     ["current", "Current"],
-    ["session", "Session"],
+    ["session", "Active Session"],
     ["lock", "Lock"],
     ["event", "Event"],
   ]],
   ["성능 분석", [
     ["history", "Session History"],
+    ["snapshot", "시점별 Session"],
     ["sql", "SQL"],
     ["trend", "추이"],
     ["report", "점검 요약"],
@@ -36,7 +37,8 @@ const MENUS = [
 
 const PAGE_META = {
   current: ["실시간", "Current"],
-  session: ["실시간", "Session"],
+  session: ["실시간", "Active Session"],
+  snapshot: ["성능 분석", "시점별 Active Session"],
   lock: ["실시간", "Lock"],
   event: ["실시간", "Event"],
   history: ["성능 분석", "Session History"],
@@ -47,7 +49,7 @@ const PAGE_META = {
   retention: ["환경설정", "보관 주기"],
 };
 
-const KEEP_PAGE = ["current", "session", "lock", "event", "history", "sql", "trend", "report", "retention"];
+const KEEP_PAGE = ["current", "session", "lock", "event", "history", "snapshot", "sql", "trend", "report", "retention"];
 const LIVE_PAGES = ["overview", "current", "session", "lock"];
 const SERIES_COLORS = ["#3b6fd8", "#e36b2c", "#2f9e68", "#8d6adf"];
 
@@ -406,7 +408,7 @@ function detail(body) {
 function busyUi() {
   const el = document.activeElement;
   if (el && ["INPUT", "SELECT", "TEXTAREA"].includes(el.tagName)) return true;
-  if (document.querySelector(".gear-drop.open, .nav-item.open")) return true;
+  if (document.querySelector(".gear-drop.open, .nav-item.open, #detail-window")) return true;
   return false;
 }
 
@@ -433,6 +435,7 @@ async function showPage(page, silent = false) {
     else if (page === "lock") await pageLock(serial);
     else if (page === "event") await pageEvent(serial);
     else if (page === "history") await pageHistory(serial);
+    else if (page === "snapshot") await pageSnapshot(serial);
     else if (page === "sql") await pageSql(serial);
     else if (page === "trend") await pageTrend(serial);
     else if (page === "report") await pageReport(serial);
@@ -728,6 +731,42 @@ async function pageSession(serial = state.renderSerial) {
   bindSqlRows();
 }
 
+async function pageSnapshot(serial = state.renderSerial) {
+  await ensureDashboard();
+  const alias = selectedOrFirst();
+  const times = await api(`/api/sessions/times?alias=${encodeURIComponent(alias)}`);
+  if (!stillCurrent(serial)) return;
+  const list = times.times || [];
+  if (!state.sessionAt || !list.includes(state.sessionAt)) {
+    const older = Math.min(30, Math.max(list.length - 1, 0));
+    state.sessionAt = list[older] || "";
+  }
+  const sessions = state.sessionAt
+    ? await api(`/api/sessions/active?alias=${encodeURIComponent(alias)}&at=${encodeURIComponent(state.sessionAt)}`)
+    : { sessions: [], collect_tm: "" };
+  if (!stillCurrent(serial)) return;
+  const options = list.map((tm) => `<option value="${esc(tm)}" ${tm === state.sessionAt ? "selected" : ""}>${esc(tm)}</option>`).join("");
+  const active = (sessions.sessions || []).filter((row) => row.status === "ACTIVE");
+  detail(`
+    <div class="toolbar">
+      <label>조회 시점<select id="snap-at">${options}</select></label>
+      <button type="button" class="primary" id="snap-search">조회</button>
+      <span class="small muted">수집 ${esc(sessions.collect_tm || "-")} · Active ${active.length} / 전체 ${(sessions.sessions || []).length}</span>
+    </div>
+    <div class="panel">
+      <header><strong>시점별 Active Session</strong></header>
+      <div class="table-wrap"><table><thead>${SESSION_HEAD}</thead><tbody>${sessionRows(sessions.sessions) || `<tr><td colspan="11" class="muted">이 시점에 세션이 없습니다.</td></tr>`}</tbody></table></div>
+    </div>
+    <div class="panel" style="margin-top:8px"><header><strong>SQL Text</strong></header><div id="sql-preview" class="sql muted" style="padding:8px">행을 선택하면 SQL이 표시됩니다.</div></div>`);
+  bindSqlRows();
+  const search = () => {
+    state.sessionAt = document.getElementById("snap-at").value;
+    showPage("snapshot");
+  };
+  document.getElementById("snap-search").onclick = search;
+  document.getElementById("snap-at").onchange = search;
+}
+
 function renderLocks(nodes) {
   if (!nodes || !nodes.length) return `<div class="muted small">대기 중인 Lock이 없습니다.</div>`;
   return nodes.map((node) => `
@@ -839,6 +878,77 @@ async function pageHistory(serial = state.renderSerial) {
   });
 }
 
+function closeWindow() {
+  document.getElementById("detail-window")?.remove();
+}
+
+function openWindow(title, body) {
+  closeWindow();
+  const wrap = document.createElement("div");
+  wrap.id = "detail-window";
+  wrap.className = "window-back";
+  wrap.innerHTML = `
+    <div class="window" role="dialog" aria-label="${esc(title)}">
+      <header><strong>${esc(title)}</strong><button type="button" class="ghost" id="window-close">닫기</button></header>
+      <div class="window-body">${body}</div>
+    </div>`;
+  document.body.appendChild(wrap);
+  document.getElementById("window-close").onclick = closeWindow;
+  wrap.addEventListener("click", (event) => {
+    if (event.target === wrap) closeWindow();
+  });
+}
+
+function statGrid(stats) {
+  const items = [
+    ["수행", stats.executions],
+    ["Elapsed ms", stats.elapsed_ms],
+    ["CPU ms", stats.cpu_ms],
+    ["Buffer Gets", stats.buffer_gets],
+    ["Disk Reads", stats.disk_reads],
+    ["Rows", stats.rows_processed],
+  ];
+  return `<div class="kpis">${items.map(([label, value]) => `<div class="kpi"><span>${label}</span><strong>${num(value, 1)}</strong></div>`).join("")}</div>`;
+}
+
+async function openSqlDetail(alias, sqlId) {
+  const data = await api(`/api/sql/detail?alias=${encodeURIComponent(alias)}&sql_id=${encodeURIComponent(sqlId)}`);
+  state._sqlDetail = data;
+  const sql = data.sql || {};
+  openWindow("SQL 상세정보", `
+    <div class="window-tools">
+      <span class="small muted">${esc(sql.sql_id)} · ${esc(sql.command_type || "")} · ${esc(sql.db_user || "")}</span>
+      <button type="button" class="primary" id="open-trace">SQL Trace</button>
+    </div>
+    <p class="small muted">처음 ${esc(sql.first_seen || "-")} · 마지막 ${esc(sql.last_seen || "-")}</p>
+    ${statGrid(data.stats || {})}
+    <div class="panel"><header><strong>SQL Text</strong></header><div class="sql" style="padding:8px">${esc(sql.sql_text || "")}</div></div>`);
+  document.getElementById("open-trace").onclick = () => openSqlTrace(data);
+}
+
+function openSqlTrace(data) {
+  const sql = data.sql || {};
+  const rows = (data.trace || []).map((row) => `
+    <tr>
+      <td>${esc(row.agent_collect_tm)}</td><td>${esc(row.sid)}</td><td>${esc(row.db_user || "")}</td>
+      <td>${esc(row.wait_class || "")}</td><td>${esc(row.wait_event || "")}</td>
+      <td>${num(row.elapsed_ms)}</td><td>${esc(row.machine || "")}</td>
+    </tr>`).join("");
+  openWindow("SQL Trace", `
+    <div class="window-tools">
+      <span class="small muted">${esc(sql.sql_id)} · ${esc(sql.command_type || "")}</span>
+      <button type="button" class="ghost" id="back-detail">SQL 상세</button>
+    </div>
+    <div class="sql" style="padding:8px; margin-bottom:8px">${esc(sql.sql_text || "")}</div>
+    <div class="panel">
+      <header><strong>세션 샘플</strong></header>
+      <div class="table-wrap"><table><thead><tr><th>시점</th><th>SID</th><th>User</th><th>Wait</th><th>Event</th><th>Elapsed</th><th>Host</th></tr></thead>
+        <tbody>${rows || `<tr><td colspan="7" class="muted">이 SQL의 세션 샘플이 없습니다.</td></tr>`}</tbody></table></div>
+    </div>
+    <div class="panel" style="margin-top:8px"><header><strong>Elapsed 추이</strong></header>${lineChart(data.series || [], "elapsed_ms", "#e36b2c")}</div>`);
+  document.getElementById("back-detail").onclick = () => openSqlDetail(sql.agent_alias, sql.sql_id);
+}
+
 async function pageSql(serial = state.renderSerial) {
   await ensureDashboard();
   const alias = selectedOrFirst();
@@ -856,6 +966,7 @@ async function pageSql(serial = state.renderSerial) {
     <div class="toolbar">
       <label>검색<input id="sql-q" value="${esc(q)}" placeholder="SQL 일부 또는 SQL ID" /></label>
       <button type="button" class="primary" id="sql-search">검색</button>
+      <span class="small muted">행을 선택하면 SQL 상세정보 창이 열립니다.</span>
     </div>
     <div class="panel"><div class="table-wrap"><table><thead><tr><th>SQL ID</th><th>유형</th><th>수행</th><th>Elapsed</th><th>Buffer</th><th>Disk</th><th>수집시간</th><th>SQL</th></tr></thead><tbody>${rows || `<tr><td colspan="8" class="muted">SQL이 없습니다.</td></tr>`}</tbody></table></div></div>
     <div class="panel" style="margin-top:8px"><header><strong>SQL 전문</strong></header><div id="sql-full" class="sql muted" style="padding:8px">행을 선택하세요.</div></div>`);
@@ -876,6 +987,7 @@ async function pageSql(serial = state.renderSerial) {
       const panel = document.getElementById("sql-full");
       panel.textContent = item?.sql_text || "";
       panel.classList.remove("muted");
+      if (item?.sql_id) openSqlDetail(alias, item.sql_id);
     };
   });
 }
