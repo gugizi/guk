@@ -1,3 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+data/
+*.sqlite
+*.sqlite-journal
+.pytest_cache/
+logs/
 docs/mariadb-migration/scripts/config.env
 docs/mariadb-migration/scripts/source.cnf
 docs/mariadb-migration/scripts/target.cnf
