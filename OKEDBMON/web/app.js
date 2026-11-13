@@ -1010,16 +1010,7 @@ async function pageSettings(serial = state.renderSerial) {
 
 async function pageRetention(serial = state.renderSerial) {
   await ensureDashboard();
-  const alias = selectedOrFirst();
   const data = await api("/api/retention");
-  if (!stillCurrent(serial)) return;
-  let agent = null;
-  let agentError = "";
-  try {
-    agent = await api(`/api/agent-retention?alias=${encodeURIComponent(alias)}`);
-  } catch (err) {
-    agentError = err.message;
-  }
   if (!stillCurrent(serial)) return;
   const rows = data.policies.map((item) => `
     <tr>
@@ -1031,34 +1022,8 @@ async function pageRetention(serial = state.renderSerial) {
       <td>${esc(item.last_purge_at || "-")}</td>
     </tr>`).join("");
   const log = data.log.map((item) => `<tr><td>${esc(item.ran_at)}</td><td>${esc(item.data_kind)}</td><td>${esc(item.keep_days)}</td><td>${num(item.deleted_rows)}</td></tr>`).join("");
-  const agentRows = (agent?.policies || []).map((item) => `
-    <tr>
-      <td>${esc(item.label)}</td>
-      <td><input data-agent-kind="${esc(item.data_kind)}" data-field="days" type="number" min="0" value="${esc(item.keep_days)}" style="width:90px" /></td>
-      <td><input data-agent-kind="${esc(item.data_kind)}" data-field="enabled" type="checkbox" ${item.enabled ? "checked" : ""} /></td>
-      <td>${num(item.row_count)}</td>
-      <td>${num(item.last_deleted)}</td>
-      <td>${esc(item.last_purge_at || "-")}</td>
-    </tr>`).join("");
-  const agentLog = (agent?.log || []).map((item) => `<tr><td>${esc(item.ran_at)}</td><td>${esc(item.data_kind)}</td><td>${esc(item.keep_days)}</td><td>${num(item.deleted_rows)}</td></tr>`).join("");
-  const agentPanel = agent ? `
-    <div class="panel" style="margin-top:8px; padding:12px">
-      <header><strong>${esc(alias)} 에이전트 저장</strong><span class="small muted">${esc(agent.store_path || "")}</span></header>
-      <p class="small">Active Session, 세션 이력, SQL Text는 이 에이전트에 저장됩니다.</p>
-      <div class="form-grid">
-        <label>저장 주기(초)<input id="agent-save" type="number" min="2" value="${esc(agent.save_interval_sec)}" /></label>
-        <label>삭제 주기(초)<input id="agent-purge" type="number" min="15" value="${esc(agent.purge_interval_sec)}" /></label>
-      </div>
-      <table><thead><tr><th>데이터</th><th>보관일수</th><th>사용</th><th>건수</th><th>마지막 삭제</th><th>실행 시각</th></tr></thead><tbody>${agentRows}</tbody></table>
-      <div style="margin-top:12px">
-        <button type="button" class="primary" id="save-agent-retention">에이전트 주기 저장</button>
-        <button type="button" class="ghost" id="run-agent-retention">에이전트 지금 삭제</button>
-      </div>
-    </div>
-    <div class="panel" style="margin-top:8px"><header><strong>${esc(alias)} 삭제 이력</strong></header>
-      <table><thead><tr><th>시각</th><th>종류</th><th>보관일</th><th>삭제 건수</th></tr></thead><tbody>${agentLog || `<tr><td colspan="4" class="muted">아직 실행 이력이 없습니다.</td></tr>`}</tbody></table>
-    </div>` : `<div class="error">${esc(agentError || "에이전트 저장 정보를 가져오지 못했습니다.")}</div>`;
   detail(`
+    <p class="small">성능, 세션, SQL, 이벤트는 수집서버에 보관되고 여기서 정한 일수가 지나면 삭제됩니다.</p>
     <div class="panel" style="padding:12px">
       <header><strong>수집서버</strong></header>
       <table><thead><tr><th>데이터</th><th>보관일수</th><th>사용</th><th>건수</th><th>마지막 삭제</th><th>실행 시각</th></tr></thead><tbody>${rows}</tbody></table>
@@ -1067,45 +1032,15 @@ async function pageRetention(serial = state.renderSerial) {
         <button type="button" class="ghost" id="run-retention">지금 삭제 실행</button>
       </div>
     </div>
-    <div class="panel" style="margin-top:8px"><header><strong>수집서버 삭제 이력</strong></header>
+    <div class="panel" style="margin-top:8px"><header><strong>삭제 이력</strong></header>
       <table><thead><tr><th>시각</th><th>종류</th><th>보관일</th><th>삭제 건수</th></tr></thead><tbody>${log || `<tr><td colspan="4" class="muted">아직 실행 이력이 없습니다.</td></tr>`}</tbody></table>
-    </div>
-    ${agentPanel}`);
+    </div>`);
   document.getElementById("save-retention").onclick = () => saveRetention(true);
   document.getElementById("run-retention").onclick = async () => {
     await saveRetention(false);
     await api("/api/retention/run", { method: "POST" });
     showPage("retention");
   };
-  const saveAgent = document.getElementById("save-agent-retention");
-  if (saveAgent) saveAgent.onclick = () => saveAgentRetention(alias, true);
-  const runAgent = document.getElementById("run-agent-retention");
-  if (runAgent) {
-    runAgent.onclick = async () => {
-      await saveAgentRetention(alias, false);
-      await api(`/api/agent-retention/run?alias=${encodeURIComponent(alias)}`, { method: "POST" });
-      showPage("retention");
-    };
-  }
-}
-
-async function saveAgentRetention(alias, refresh = true) {
-  const grouped = {};
-  document.querySelectorAll("[data-agent-kind]").forEach((input) => {
-    const kind = input.dataset.agentKind;
-    grouped[kind] = grouped[kind] || { data_kind: kind, keep_days: 0, enabled: false };
-    if (input.dataset.field === "days") grouped[kind].keep_days = Number(input.value);
-    if (input.dataset.field === "enabled") grouped[kind].enabled = input.checked;
-  });
-  await api(`/api/agent-retention?alias=${encodeURIComponent(alias)}`, {
-    method: "PUT",
-    body: JSON.stringify({
-      save_interval_sec: Number(document.getElementById("agent-save").value),
-      purge_interval_sec: Number(document.getElementById("agent-purge").value),
-      policies: Object.values(grouped),
-    }),
-  });
-  if (refresh) showPage("retention");
 }
 
 async function saveRetention(refresh = true) {

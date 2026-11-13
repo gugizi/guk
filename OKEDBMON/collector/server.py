@@ -7,13 +7,12 @@ import time
 from datetime import datetime, timedelta
 from pathlib import Path
 
-import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from collector.store import DEFAULT_AGENT_TOKEN, ROOT, Store, load_properties, now_text, repository_path
+from collector.store import ROOT, Store, load_properties, now_text, repository_path
 from collector.version import PRODUCT, VERSION, display_name
 
 WEB = ROOT / "web"
@@ -48,12 +47,6 @@ class RetentionItem(BaseModel):
 
 
 class RetentionBody(BaseModel):
-    policies: list[RetentionItem]
-
-
-class AgentRetentionBody(BaseModel):
-    save_interval_sec: int = Field(ge=2, le=86400)
-    purge_interval_sec: int = Field(ge=15, le=86400)
     policies: list[RetentionItem]
 
 
@@ -174,35 +167,14 @@ def create_app(store: Store | None = None) -> FastAPI:
         start_text = start or now_text(datetime.now() - timedelta(hours=1))
         return {"series": store.performance_series(alias, start_text, end_text)}
 
-    def ask_agent(alias: str, method: str, path: str, params: dict | None = None, body: dict | None = None) -> dict:
-        base = store.agent_url(alias)
-        if not base:
-            raise HTTPException(status_code=503, detail=f"{alias} 에이전트가 조회 주소를 아직 등록하지 않았습니다.")
-        token = store.setting("agent.token", DEFAULT_AGENT_TOKEN)
-        try:
-            response = httpx.request(
-                method,
-                base.rstrip("/") + path,
-                params=params,
-                json=body,
-                headers={"X-Agent-Token": token},
-                timeout=8,
-            )
-        except httpx.HTTPError as exc:
-            raise HTTPException(status_code=503, detail=f"{alias} 에이전트에 연결하지 못했습니다.") from exc
-        data = response.json() if response.content else {}
-        if response.status_code >= 400:
-            detail = data.get("detail") if isinstance(data, dict) else ""
-            # An agent 401 is an agent token problem. Forwarding 401 would log the viewer out.
-            status = 503 if response.status_code in (401, 403) else response.status_code
-            raise HTTPException(status_code=status, detail=detail or "에이전트 조회에 실패했습니다.")
-        return data
-
     @app.get("/api/sessions/active")
     def active_sessions(alias: str, user: dict = Depends(current_user)):
-        data = ask_agent(alias, "GET", "/api/sessions/active")
-        rows = data.get("sessions") or []
-        return {"collect_tm": data.get("collect_tm"), "sessions": rows, "locks": _lock_tree(rows)}
+        rows = store.current_sessions(alias)
+        return {
+            "collect_tm": rows[0]["agent_collect_tm"] if rows else None,
+            "sessions": rows,
+            "locks": _lock_tree(rows),
+        }
 
     @app.get("/api/sessions/history")
     def session_history(
@@ -214,28 +186,11 @@ def create_app(store: Store | None = None) -> FastAPI:
     ):
         end_text = end or now_text()
         start_text = start or now_text(datetime.now() - timedelta(hours=1))
-        return ask_agent(
-            alias,
-            "GET",
-            "/api/sessions/history",
-            {"start": start_text, "end": end_text, "sql_id": sql_id},
-        )
+        return {"sessions": store.session_history(alias, start_text, end_text, sql_id)}
 
     @app.get("/api/sql")
     def sql_list(alias: str, q: str = "", limit: int = 80, user: dict = Depends(current_user)):
-        return ask_agent(alias, "GET", "/api/sql", {"q": q, "limit": limit})
-
-    @app.get("/api/agent-retention")
-    def agent_retention(alias: str, user: dict = Depends(current_user)):
-        return ask_agent(alias, "GET", "/api/retention")
-
-    @app.put("/api/agent-retention")
-    def put_agent_retention(alias: str, body: AgentRetentionBody, user: dict = Depends(current_user)):
-        return ask_agent(alias, "PUT", "/api/retention", body=body.model_dump())
-
-    @app.post("/api/agent-retention/run")
-    def run_agent_retention(alias: str, user: dict = Depends(current_user)):
-        return ask_agent(alias, "POST", "/api/retention/run")
+        return {"sql": store.sql_catalog(alias, q, limit)}
 
     @app.get("/api/events")
     def events(alias: str = "", user: dict = Depends(current_user)):
@@ -250,12 +205,7 @@ def create_app(store: Store | None = None) -> FastAPI:
     ):
         end_text = end or now_text()
         start_text = start or now_text(datetime.now() - timedelta(hours=6))
-        result = store.report(alias, start_text, end_text)
-        try:
-            result["top_sql"] = ask_agent(alias, "GET", "/api/sql", {"limit": 10}).get("sql") or []
-        except HTTPException as exc:
-            result["sql_error"] = exc.detail
-        return result
+        return store.report(alias, start_text, end_text)
 
     @app.post("/api/ingest")
     def ingest(body: IngestBody, x_agent_token: str | None = Header(default=None)):
